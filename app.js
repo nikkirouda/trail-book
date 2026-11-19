@@ -2,7 +2,7 @@
    This file is code only. It holds no plan, no dates, no names and no log: those are fetched once from a
    private repository with a key the owner pastes in, and are then kept on the device for offline use. */
 'use strict';
-const VERSION = '0.1.1';
+const VERSION = '0.1.2';
 let TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';      // replaced by the plan's own time zone once a plan is loaded
 const DEF = { start: 'the start', end: 'the finish', endName: 'The finish', tzName: 'local time', quiet: 'remote country', who: 'a hiker on the trail', floorNote: '', coldName: '', coldMile: null, coldAfter: '', coldWarn: '', dirNote: 'from the start' };
 const L = k => (S.plan && S.plan.meta && S.plan.meta.labels && S.plan.meta.labels[k] != null) ? S.plan.meta.labels[k] : DEF[k];
@@ -45,6 +45,8 @@ const saveLogs = () => db.set('logs', S.logs);
 const saveSt = () => db.set('st', S.st);
 const saveMeta = () => db.set('meta', S.meta);
 const isHome = () => S.settings.mode === 'home';
+function keyInfo(t) { if (!t) return 'No key in the box yet.'; const kind = t.startsWith('github_pat_') ? 'a fine-grained key' : /^gh[pousr]_/.test(t) ? 'a classic key (it will work, but a fine-grained one limited to the one repository is safer)' : 'NOT a GitHub key: those begin github_pat_'; return `In the box: ${t.length} characters, ${kind}${/\s/.test(t) ? ', with a space or line break inside it (paste it again)' : ''}.`; }
+function keyProblem(status) { return status === 401 ? 'GitHub did not accept the key (401). It is mistyped, cut short, expired or deleted. Clear the box and paste it again; if that fails, make a new key.' : (status === 403 || status === 404) ? `The key is real but cannot see ${S.settings.repo} (${status}). Check the repository name above, and that the key's Repository access lists it.` : 'GitHub answered ' + status + '.'; }
 
 /* ---------- track: the trail line with miles and elevations ---------- */
 function decodeTrack(t) {
@@ -146,6 +148,7 @@ async function sync(manual) {
   S.busy = true; setNet('Syncing…');
   try {
     const files = await ghList('plan'); let got = false;
+    if (!files.some(f => f.name === 'plan.json')) throw new Error(`No plan found in ${S.settings.repo}. Check the repository name, and that the key's Repository access lists it.`);
     for (const f of files) {
       if (!['plan.json', 'track.json'].includes(f.name) || S.meta.shas[f.name] === f.sha) continue;
       let j = await ghRaw('plan/' + f.name); const key = f.name.replace('.json', '');
@@ -179,7 +182,7 @@ async function sync(manual) {
     S.meta.lastSync = Date.now(); S.meta.lastErr = ''; await saveMeta();
     if (manual) toast(got ? 'Synced. The plan was updated.' : 'Synced.');
     render();
-  } catch (e) { S.meta.lastErr = String(e.message || e).slice(0, 120); await saveMeta(); if (manual) toast('Sync did not finish: ' + S.meta.lastErr); }
+  } catch (e) { const m = /: (401|403|404)$/.exec(String(e.message || '')); S.meta.lastErr = m ? keyProblem(+m[1]) : String(e.message || e).slice(0, 200); await saveMeta(); if (manual) toast('Sync did not finish: ' + S.meta.lastErr); }
   S.busy = false; setNet();
   if (S.again) { S.again = false; if (S.meta.dirty.length || S.meta.stDirty) sync(false); }
 }
@@ -466,7 +469,8 @@ V.settings = () => {
   <div class="card"><h2>The private log and plan</h2><p class="small muted">The plan and your log live in a private repository. The key below lets this phone read ${isHome() ? '' : 'and write '}it. The key stays in this browser only.</p>
   <label for="mode">This device is</label><select id="mode" data-set="mode"><option value="hiker" ${s.mode === 'hiker' ? 'selected' : ''}>The walker's phone (reads and writes)</option><option value="home" ${s.mode === 'home' ? 'selected' : ''}>The home contact's (reads only)</option></select>
   <label for="repo">Repository (owner/name)</label><input id="repo" data-set="repo" value="${esc(s.repo)}" placeholder="owner/name" autocapitalize="off" spellcheck="false">
-  <label for="tok">Key (GitHub fine-grained token)</label><input id="tok" type="password" data-set="token" value="${esc(s.token)}" autocomplete="off" autocapitalize="off" spellcheck="false">
+  <label for="tok">Key (GitHub fine-grained token)</label><input id="tok" type="password" data-set="token" value="${esc(s.token)}" autocomplete="one-time-code" autocapitalize="off" autocorrect="off" spellcheck="false">
+  <p class="small muted" id="keyinfo">${esc(keyInfo(s.token))}</p><div class="btns"><button type="button" class="btn ghost" data-act="showkey">Show or hide the key</button><button type="button" class="btn ghost" data-act="clearkey">Clear the key</button></div>
   <div class="btns"><button class="btn" data-act="sync">Sync now</button><button class="btn ghost" data-act="test">Test the key</button></div>
   <p class="small muted">Last sync: ${S.meta.lastSync ? esc(new Date(S.meta.lastSync).toLocaleString('en-US', { timeZone: TZ })) + ' ' + esc(L('tzName')) : 'never'}${pend ? ` · ${pend} change${pend === 1 ? '' : 's'} waiting for signal` : ''}${S.meta.lastErr ? ' · last problem: ' + esc(S.meta.lastErr) : ''}<br>Plan on this device: ${P() ? 'built ' + esc(P().meta.built) : 'none'} · trail line: ${S.track ? 'yes' : 'none'}</p><p class="small" id="offline"></p></div>
   ${isHome() ? '' : `<div class="card"><h2>About me (this phone only)</h2><p class="small muted">Shown on the Emergency page. Never sent anywhere.</p><label for="cn">Name</label><input id="cn" data-card="name" value="${esc(s.card.name)}"><label for="cc">Emergency contact (name and number)</label><input id="cc" data-card="contact" value="${esc(s.card.contact)}"><label for="cm">Medical notes (conditions, medicines, allergies, physician)</label><textarea id="cm" data-card="medical">${esc(s.card.medical)}</textarea></div>`}
@@ -524,7 +528,9 @@ document.addEventListener('click', async ev => {
   else if (act === 'acceptplan' && S.pending) { if (S.pending.plan) { await db.set('plan', S.pending.plan); usePlan(S.pending.plan); } if (S.pending.track) { await db.set('track', S.pending.track); S.track = decodeTrack(S.pending.track); } Object.assign(S.meta.shas, S.pending.shas); S.pending = null; await db.set('pending', null); await saveMeta(); toast('The new plan is in use.'); render(); }
   else if (act === 'keepplan' && S.pending) { Object.assign(S.meta.shas, S.pending.shas); S.pending = null; await db.set('pending', null); await saveMeta(); toast('Kept your plan. The new one will be offered again if it changes.'); render(); }
   else if (act === 'nopreview') { S.settings.preview = ''; saveSettings(); render(); }
-  else if (act === 'test') { if (!S.settings.token || !S.settings.repo) return toast('Enter the repository and paste the key first.'); try { const r = await fetch(`https://api.github.com/repos/${S.settings.repo}`, { headers: hdr() }); if (!r.ok) throw new Error('HTTP ' + r.status); const j = await r.json(); toast(!j.private ? 'Warning: that repository is PUBLIC.' : (j.permissions && j.permissions.push) ? (isHome() ? 'Key works, but it can write. A read-only key is safer here.' : 'Key works: private, can write.') : (isHome() ? 'Key works: private, read only.' : 'Key can read but not write. Set Contents to Read and write.')); } catch (e) { toast('Key test failed: ' + e.message); } }
+  else if (act === 'test') { if (!S.settings.token || !S.settings.repo) return toast('Enter the repository and paste the key first.'); try { const r = await fetch(`https://api.github.com/repos/${S.settings.repo}`, { headers: hdr() }); if (!r.ok) { toast(keyProblem(r.status)); return; } const j = await r.json(); toast(!j.private ? 'Warning: that repository is PUBLIC.' : (j.permissions && j.permissions.push) ? (isHome() ? 'Key works, but it can write. A read-only key is safer here.' : 'Key works: private, can write.') : (isHome() ? 'Key works: private, read only.' : 'Key can read but not write. Set Contents to Read and write.')); } catch (e) { toast('Key test failed: ' + e.message); } }
+  else if (act === 'showkey') { const el = $('#tok'); if (el) el.type = el.type === 'password' ? 'text' : 'password'; }
+  else if (act === 'clearkey') { S.settings.token = ''; saveSettings(); render(); toast('Key cleared from this device.'); }
   else if (act === 'dellog') { const d = $('#logform').dataset.date; if (confirm('Delete this entry?')) { S.logs[d] = { date: d, deleted: true, wx: [], t: Date.now() }; await saveLogs(); markDirty(d); location.hash = '#/log'; sync(false); } }
   else if (act === 'export') { const blob = new Blob([JSON.stringify({ app: 'trailbook', version: VERSION, saved: new Date().toISOString(), logs: S.logs, st: S.st }, null, 1)], { type: 'application/json' }), a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `trailbook-backup-${realToday()}.json`; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 2000); }
   else if (act === 'wipe') { if (confirm('Erase the plan, the log and the key from this device? The private repository is not touched.')) { await db.clear(); localStorage.removeItem('tb.settings'); location.hash = ''; location.reload(); } }
@@ -536,7 +542,7 @@ document.addEventListener('change', async ev => {
   else if (t.dataset.gear) { S.st.gear[t.dataset.gear] = t.checked; stChanged(); t.closest('.check').classList.toggle('done', t.checked); }
   else if (t.dataset.oz) { const v = parseFloat(t.value); S.st.oz[t.dataset.oz] = v > 0 ? v : 0; stChanged(); }
   else if (t.hasAttribute('data-floor')) { S.st.floor = t.value.trim().slice(0, 8); stChanged(); }
-  else if (t.dataset.set) { const k = t.dataset.set; let v = t.value.trim(); if (k === 'repo' && !REPO_RE.test(v)) { toast('That does not look like owner/name.'); t.value = S.settings.repo; return; } if (k === 'preview' && v && !DATE_RE.test(v)) v = ''; S.settings[k] = v; saveSettings(); if (k === 'mode' || k === 'preview') render(); }
+  else if (t.dataset.set) { const k = t.dataset.set; let v = t.value.trim(); if (k === 'repo' && !REPO_RE.test(v)) { toast('That does not look like owner/name.'); t.value = S.settings.repo; return; } if (k === 'preview' && v && !DATE_RE.test(v)) v = ''; if (k === 'token') v = v.replace(/\s+/g, ''); S.settings[k] = v; saveSettings(); if (k === 'mode' || k === 'preview') render(); if (k === 'token') { t.value = v; const ki = $('#keyinfo'); if (ki) ki.textContent = keyInfo(v); } }
   else if (t.dataset.card) { S.settings.card[t.dataset.card] = t.value.slice(0, 1500); saveSettings(); }
   else if (t.hasAttribute('data-pick') && t.value) { const [m, ...n] = t.value.split('|'), f = $('#logform'); f.b.value = m; f.place.value = n.join('|'); }
   else if (t.hasAttribute('data-import') && t.files[0]) { try { const j = JSON.parse(await t.files[0].text()); if (j.app !== 'trailbook') throw new Error('not a Trail Book backup'); const before = Object.keys(S.logs).length; Object.values(j.logs || {}).forEach(e => { const c = cleanEntry(e); if (c && (!S.logs[c.date] || (c.t || 0) > (S.logs[c.date].t || 0))) { S.logs[c.date] = c; markDirty(c.date); } }); const st = cleanSt(j.st); if (st.updated > S.st.updated) { S.st = st; S.meta.stDirty = true; } await saveLogs(); await saveSt(); await saveMeta(); toast(`Restored. ${Object.keys(S.logs).length - before} new entries.`); render(); } catch (e) { toast('Could not restore: ' + e.message); } }
