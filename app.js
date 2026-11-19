@@ -2,7 +2,7 @@
    This file is code only. It holds no plan, no dates, no names and no log: those are fetched once from a
    private repository with a key the owner pastes in, and are then kept on the device for offline use. */
 'use strict';
-const VERSION = '0.2.1';
+const VERSION = '0.2.2';
 let TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';      // replaced by the plan's own time zone once a plan is loaded
 const DEF = { start: 'the start', end: 'the finish', endName: 'The finish', tzName: 'local time', quiet: 'remote country', who: 'a hiker on the trail', floorNote: '', coldName: '', coldMile: null, coldAfter: '', coldWarn: '', dirNote: 'from the start', mapCredit: 'Topographic base: USGS The National Map.' };
 const L = k => (S.plan && S.plan.meta && S.plan.meta.labels && S.plan.meta.labels[k] != null) ? S.plan.meta.labels[k] : DEF[k];
@@ -573,7 +573,7 @@ function mapAttach() {
     mapDraw(); });
   const up = e => { const had = ptrs.has(e.pointerId); ptrs.delete(e.pointerId); if (ptrs.size < 2) pinch = 0; if (!had || e.type !== 'pointerup' || moved > 10 || ptrs.size) return;
     const r = cv.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top; let best = null, bd = 26 * 26; (MAP.hit || []).forEach(h => { const d = (h[0] - x) ** 2 + (h[1] - y) ** 2; if (d < bd) { bd = d; best = h[2]; } });
-    if (best) mapInfo(`${best.n} · ${KIND[best.k]} · mile ${num(best.m)}${best.off > 500 ? ' · ' + int(best.off) + ' ft off the trail' : ''}${best.food ? ' · food storage: ' + best.food : ''}${best.note ? ' · ' + best.note : ''}`); };
+    if (best) mapInfo(`${best.n} · ${best.k === 't' ? 'Town stop: this is where you leave the trail' : KIND[best.k]} · mile ${num(best.m)}${best.off > 500 ? ' · ' + int(best.off) + ' ft off the trail' : ''}${best.food ? ' · food storage: ' + best.food : ''}${best.note ? ' · ' + best.note : ''}`); };
   cv.addEventListener('pointerup', up); cv.addEventListener('pointercancel', up);
   cv.addEventListener('wheel', e => { e.preventDefault(); MAP.z = Math.max(8, Math.min(16.5, MAP.z - e.deltaY / 400)); mapDraw(); }, { passive: false });
   mapDraw();
@@ -588,7 +588,7 @@ V.map = (kind, arg) => {
   const have = Object.keys(S.meta.maps).length;
   return `<h1>${esc(title)}</h1><div class="mapwrap"><canvas id="map" class="map" role="img" aria-label="Map of the trail"></canvas><div class="mapbtns"><button class="btn" data-act="zin" aria-label="Zoom in">+</button><button class="btn" data-act="zout" aria-label="Zoom out">−</button></div></div>
   <div class="btns"><button class="btn" data-act="mapme">${S.gps && S.gps.wait ? 'Finding you…' : 'Find me'}</button><a class="btn ghost" href="#/maps">Offline maps</a></div>
-  <div class="card small" id="mapinfo">Drag to move, pinch to zoom, tap a marker for its name. Triangle: shelter. Square: campsite. Ring: road crossing. Dot: town.</div>
+  <div class="card small" id="mapinfo">Drag to move, pinch to zoom, tap a marker for its name. Green triangle: shelter. Green square: campsite. White ring: road crossing. Black dot: the point on the trail where you leave it for a town stop (the town itself may be miles off). Blue dot: you.</div>
   <p class="small muted">${have ? '' : 'No topographic maps are stored yet: with no signal you will see the trail and markers on a plain ground. '}${esc(L('mapCredit'))} An aid, not a navigation instrument: carry the paper map.</p>`;
 };
 V.maps = () => {
