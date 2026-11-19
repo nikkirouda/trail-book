@@ -2,7 +2,7 @@
    This file is code only. It holds no plan, no dates, no names and no log: those are fetched once from a
    private repository with a key the owner pastes in, and are then kept on the device for offline use. */
 'use strict';
-const VERSION = '0.1.2';
+const VERSION = '0.1.3';
 let TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';      // replaced by the plan's own time zone once a plan is loaded
 const DEF = { start: 'the start', end: 'the finish', endName: 'The finish', tzName: 'local time', quiet: 'remote country', who: 'a hiker on the trail', floorNote: '', coldName: '', coldMile: null, coldAfter: '', coldWarn: '', dirNote: 'from the start' };
 const L = k => (S.plan && S.plan.meta && S.plan.meta.labels && S.plan.meta.labels[k] != null) ? S.plan.meta.labels[k] : DEF[k];
@@ -45,6 +45,7 @@ const saveLogs = () => db.set('logs', S.logs);
 const saveSt = () => db.set('st', S.st);
 const saveMeta = () => db.set('meta', S.meta);
 const isHome = () => S.settings.mode === 'home';
+const roNote = () => isHome() ? `<div class="box amber"><b>This device is set as the home contact's, so it can look but not change anything.</b> If this is the walker's own phone, change "This device is" in <a href="#/settings">Settings</a>.</div>` : '';
 function keyInfo(t) { if (!t) return 'No key in the box yet.'; const kind = t.startsWith('github_pat_') ? 'a fine-grained key' : /^gh[pousr]_/.test(t) ? 'a classic key (it will work, but a fine-grained one limited to the one repository is safer)' : 'NOT a GitHub key: those begin github_pat_'; return `In the box: ${t.length} characters, ${kind}${/\s/.test(t) ? ', with a space or line break inside it (paste it again)' : ''}.`; }
 function keyProblem(status) { return status === 401 ? 'GitHub did not accept the key (401). It is mistyped, cut short, expired or deleted. Clear the box and paste it again; if that fails, make a new key.' : (status === 403 || status === 404) ? `The key is real but cannot see ${S.settings.repo} (${status}). Check the repository name above, and that the key's Repository access lists it.` : 'GitHub answered ' + status + '.'; }
 
@@ -324,7 +325,7 @@ V.today = () => {
 };
 V.home = () => {
   const t = today(), last = myLast(), d = dayByDate(t), r = pace();
-  let h = `<h1>Home view</h1><p class="muted">${esc(fmtDL(t))}</p><div class="card"><h2>Last word from the phone</h2>`;
+  let h = `<h1>Home view</h1><p class="muted">${esc(fmtDL(t))} · this device reads only. <a href="#/settings">Change in Settings</a> if it is the walker's own phone.</p><div class="card"><h2>Last word from the phone</h2>`;
   if (last) h += `<p class="big">${esc(last.place || 'Mile ' + num(last.b))}</p><p>Mile <b class="num">${num(last.b)}</b> on ${esc(fmtDL(last.date))}${last.rest ? ' (rest day)' : ''}.</p>${last.notes ? `<div class="note">${esc(last.notes)}</div>` : ''}<p class="small muted">Entry written ${last.t ? esc(new Date(last.t).toLocaleString('en-US', { timeZone: TZ })) + ' ' + esc(L('tzName')) : 'time unknown'}. This device last checked ${S.meta.lastSync ? esc(new Date(S.meta.lastSync).toLocaleString('en-US', { timeZone: TZ })) : 'never'}.</p>`;
   else h += '<p class="muted">No log entries have arrived yet.</p>';
   h += `<div class="box amber"><b>What this is not.</b> The phone sends its log only when it finds signal, which can be days apart in ${esc(L('quiet'))}. Silence here is normal. The daily check-in is the satellite message, not this page. If a check-in is missed, follow the steps under Emergency.</div><div class="btns"><button class="btn" data-act="sync">Check now</button><a class="btn ghost" href="#/sos">Emergency steps and numbers</a></div></div>`;
@@ -351,7 +352,7 @@ V.plan = sub => {
       `<div class="card"><h2>Decision points</h2>${P().decision.points.map(p => `<p><b>${esc(p.name)}</b> (plan ${esc(fmtD(p.plan))}, control ${esc(fmtD(p.control))}). ${esc(p.text)}</p>`).join('')}<p class="small muted">${esc(P().decision.note)}</p></div>`;
   } else if (sub === 'todo') {
     const pre = P().calendar.filter(c => !c.trail), tr = P().calendar.filter(c => c.trail);
-    h += `<div class="card"><h2>Before the trail</h2>${pre.map(todoRow).join('')}</div><div class="card"><h2>Bookings on the trail</h2>${tr.map(todoRow).join('')}</div><a class="btn ghost block" href="#/rules/permits">Every permit in detail</a>`;
+    h += roNote() + `<div class="card"><h2>Before the trail</h2>${pre.map(todoRow).join('')}</div><div class="card"><h2>Bookings on the trail</h2>${tr.map(todoRow).join('')}</div><a class="btn ghost block" href="#/rules/permits">Every permit in detail</a>`;
   } else h += '<ul class="list card">' + P().docs.map((d, i) => `<li><a class="item" href="#/doc/${i}"><span class="t">${esc(d.title)}</span><span class="r">${int(d.md.length / 1000)}k</span></a></li>`).join('') + '</ul><p class="small muted">The full written record, as researched. All of it is on the phone.</p>';
   return h;
 };
@@ -430,7 +431,7 @@ V.guide = id => {
 V.gear = () => {
   const g = C('gear'); if (!g) return '<h1>Gear</h1><div class="card"><p class="muted">The gear list has not been loaded to this phone yet. Sync once with signal.</p></div>';
   let tot = 0, n = 0, done = 0; g.groups.forEach(gr => gr.items.forEach(it => { n++; if (S.st.gear[it.id]) done++; if (S.st.oz[it.id] > 0) tot += S.st.oz[it.id]; }));
-  let h = `<h1>Gear checklist</h1><div class="card"><div class="stats two">${stat(done + ' / ' + n, 'ticked')}${stat(tot ? num(tot / 16) + ' lb' : '–', 'weighed so far')}</div><p class="small muted">${esc(g.base_weight_note || '')}</p></div>`;
+  let h = `<h1>Gear checklist</h1>` + roNote() + `<div class="card"><div class="stats two">${stat(done + ' / ' + n, 'ticked')}${stat(tot ? num(tot / 16) + ' lb' : '–', 'weighed so far')}</div><p class="small muted">${esc(g.base_weight_note || '')}</p></div>`;
   if (g.swaps && g.swaps.length) h += `<div class="card"><h2>Changes on the way</h2>${g.swaps.map(s => `<p><b>${esc(s.where)}</b>${s.when ? ', ' + esc(s.when) : ''}: ${esc(s.what)}</p>`).join('')}</div>`;
   g.groups.forEach(gr => { h += `<div class="card"><h2>${esc(gr.title)}</h2>${gr.note ? `<p class="small muted">${esc(gr.note)}</p>` : ''}` + gr.items.map(it => `<div class="check ${S.st.gear[it.id] ? 'done' : ''}"><input type="checkbox" aria-label="${esc(it.name)}" data-gear="${esc(it.id)}" ${S.st.gear[it.id] ? 'checked' : ''} ${isHome() ? 'disabled' : ''}><span class="t"><b>${esc(it.name)}</b>${it.why ? '<br>' + esc(it.why) : ''}${it.spec ? `<br><span class="small muted">${esc(it.spec)}</span>` : ''}${it.tbd ? `<br><span class="small"><span class="flag amber">TBD</span>${esc(it.tbd)}</span>` : ''}<br><input class="oz" inputmode="decimal" aria-label="Weight of ${esc(it.name)} in ounces" placeholder="oz" data-oz="${esc(it.id)}" value="${S.st.oz[it.id] > 0 ? S.st.oz[it.id] : ''}" ${isHome() ? 'disabled' : ''}></span></div>`).join('') + '</div>'; });
   if (g.consumables && g.consumables.length) h += `<div class="card"><h2>Consumables</h2>${ul(g.consumables.map(c => c.name + (c.note ? ': ' + c.note : '')))}</div>`;
@@ -487,7 +488,7 @@ function tabs(cur) { const t = isHome() ? [['today', 'Home'], ['plan', 'Plan'], 
 function render() {
   const parts = location.hash.replace(/^#\/?/, '').split('/').map(decodeURIComponent), r = parts[0] || 'today'; let html, tab = r;
   try {
-    if (r === 'setup' && REPO_RE.test(parts[1] + '/' + parts[2])) { S.settings.repo = parts[1] + '/' + parts[2]; if (parts[3] === 'home') S.settings.mode = 'home'; saveSettings(); location.hash = '#/settings'; return; }
+    if (r === 'setup' && REPO_RE.test(parts[1] + '/' + parts[2])) { S.settings.repo = parts[1] + '/' + parts[2]; S.settings.mode = parts[3] === 'home' ? 'home' : 'hiker'; saveSettings(); location.hash = '#/settings'; return; }
     if (r === 'day') { html = V.day(parts[1]); tab = 'plan'; }
     else if (r === 'plan') html = V.plan(parts[1]);
     else if (r === 'doc') { html = V.doc(parts[1]); tab = 'plan'; }
