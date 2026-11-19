@@ -2,7 +2,7 @@
    This file is code only. It holds no plan, no dates, no names and no log: those are fetched once from a
    private repository with a key the owner pastes in, and are then kept on the device for offline use. */
 'use strict';
-const VERSION = '0.3.0';
+const VERSION = '0.3.1';
 let TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';      // replaced by the plan's own time zone once a plan is loaded
 const DEF = { start: 'the start', end: 'the finish', endName: 'The finish', tzName: 'local time', quiet: 'remote country', who: 'a hiker on the trail', floorNote: '', coldName: '', coldMile: null, coldAfter: '', coldWarn: '', dirNote: 'from the start', mapCredit: 'Topographic base: USGS The National Map.' };
 const L = k => (S.plan && S.plan.meta && S.plan.meta.labels && S.plan.meta.labels[k] != null) ? S.plan.meta.labels[k] : DEF[k];
@@ -49,6 +49,7 @@ const saveLogs = () => db.set('logs', S.logs);
 const saveSt = () => db.set('st', S.st);
 const saveMeta = () => db.set('meta', S.meta);
 const isHome = () => S.settings.mode === 'home';
+const brk = () => { const v = parseFloat(S.settings.breaks); return v >= 0 && v <= 6 ? v : 2; };
 const roNote = () => isHome() ? `<div class="box amber"><b>This device is set as the home contact's, so it can look but not change anything.</b> If this is the walker's own phone, change "This device is" in <a href="#/settings">Settings</a>.</div>` : '';
 function keyInfo(t) { if (!t) return 'No key in the box yet.'; const kind = t.startsWith('github_pat_') ? 'a fine-grained key' : /^gh[pousr]_/.test(t) ? 'a classic key (it will work, but a fine-grained one limited to the one repository is safer)' : 'NOT a GitHub key: those begin github_pat_'; return `In the box: ${t.length} characters, ${kind}${/\s/.test(t) ? ', with a space or line break inside it (paste it again)' : ''}.`; }
 function keyProblem(status) { return status === 401 ? 'GitHub did not accept the key (401). It is mistyped, cut short, expired or deleted. Clear the box and paste it again; if that fails, make a new key.' : (status === 403 || status === 404) ? `The key is real but cannot see ${S.settings.repo} (${status}). Check the repository name above, and that the key's Repository access lists it.` : 'GitHub answered ' + status + '.'; }
@@ -225,7 +226,8 @@ function dayCard(d, opts) {
   if (!rest) h += `<p class="muted small">from ${esc(d.frm)}${d.state ? ' · ' + esc(d.state) : ''}${d.food ? ' · food storage: ' + esc(d.food) : ''}</p>
     <div class="stats">${stat(num(d.mi), 'miles')}${stat(int(d.up), 'ft climb')}${stat(num(d.hrs), `hrs at ${P().meta.mph} mph`)}${stat(num(d.book), 'hrs book pace')}${stat(num(d.light), 'hrs daylight')}${stat(num(d.b), 'mile tonight')}</div>`;
   if (s.rise) h += `<p class="small muted">Sunrise ${esc(fmtT(s.rise))} · sunset ${esc(fmtT(s.set))} (${esc(L('tzName'))})${d.day === 1 ? ' · ' + num(d.walk) + ' miles walked today' : ''}</p>`;
-  if (!rest && d.book > d.light - 1.5) h += `<div class="box amber">At book pace this day fills the daylight. Start at first light, headlamp to hand.</div>`;
+  if (!rest && s.rise) { const br = brk(), need = x => new Date(s.set.getTime() - (x + br + 0.5) * 36e5), a = need(d.hrs), b = need(d.book), tight = a < s.rise, slow = b < s.rise;
+    h += `<div class="box ${tight ? 'red' : slow ? 'amber' : 'green'}"><b>${tight ? 'This day does not fit the daylight, even at your pace.' : slow ? 'Fits at your pace; not at book pace.' : 'Fits the daylight at either pace.'}</b> With ${num(br)} h of breaks and camp made half an hour before sunset, set off by <b>${esc(fmtT(a))}</b> at ${P().meta.mph} mph${slow ? `. At book pace you would have to leave at ${esc(fmtT(b))}, before sunrise: shorten the day, or expect to finish by headlamp` : `, or by ${esc(fmtT(b))} at book pace`}.</div>`; }
   if (!rest) h += profile(d.a, d.b, opts.me);
   if (d.note) h += `<div class="note"><span class="flag">${d.kind === 'town' || rest ? 'TOWN' : 'NOTE'}</span>${esc(d.note)}</div>`;
   h += d.notes.map(noteHtml).join('');
@@ -489,6 +491,7 @@ V.settings = () => {
   <div class="btns"><button class="btn" data-act="sync">Sync now</button><button class="btn ghost" data-act="test">Test the key</button></div>
   <p class="small muted">Last sync: ${S.meta.lastSync ? esc(new Date(S.meta.lastSync).toLocaleString('en-US', { timeZone: TZ })) + ' ' + esc(L('tzName')) : 'never'}${pend ? ` · ${pend} change${pend === 1 ? '' : 's'} waiting for signal` : ''}${S.meta.lastErr ? ' · last problem: ' + esc(S.meta.lastErr) : ''}<br>Plan on this device: ${P() ? 'built ' + esc(P().meta.built) : 'none'} · trail line: ${S.track ? 'yes' : 'none'}</p><p class="small" id="offline"></p></div>
   ${isHome() ? '' : `<div class="card"><h2>About me (this phone only)</h2><p class="small muted">Shown on the Emergency page. Never sent anywhere.</p><label for="cn">Name</label><input id="cn" data-card="name" value="${esc(s.card.name)}"><label for="cc">Emergency contact (name and number)</label><input id="cc" data-card="contact" value="${esc(s.card.contact)}"><label for="cm">Medical notes (conditions, medicines, allergies, physician)</label><textarea id="cm" data-card="medical">${esc(s.card.medical)}</textarea></div>`}
+  <div class="card"><h2>Breaks</h2><p class="small muted">Hours a day you allow for eating, cooking and rest while it is light. Walking hours never include these; each day's "set off by" time does.</p><input inputmode="decimal" data-set="breaks" aria-label="Break hours a day" value="${esc(String(brk()))}"></div>
   <div class="card"><h2>Preview a day</h2><p class="small muted">See the app as it will look on a day of the walk. Leave empty for today.</p><input type="date" data-set="preview" aria-label="Preview date" value="${esc(s.preview)}"></div>
   <div class="card"><h2>Backup</h2><p class="small muted">A copy of your log and checklists as a file, in case the phone or the sync fails.</p><div class="btns"><button class="btn ghost" data-act="export">Save a backup file</button><label class="btn ghost">Restore from a file<input type="file" accept="application/json,.json" data-import hidden></label></div>
   <p class="small muted" id="persist"></p><div class="btns"><button class="btn danger" data-act="wipe">Erase everything on this device</button></div></div>
@@ -688,7 +691,7 @@ document.addEventListener('change', async ev => {
   else if (t.dataset.gear) { S.st.gear[t.dataset.gear] = t.checked; stChanged(); t.closest('.check').classList.toggle('done', t.checked); }
   else if (t.dataset.oz) { const v = parseFloat(t.value); S.st.oz[t.dataset.oz] = v > 0 ? v : 0; stChanged(); }
   else if (t.hasAttribute('data-floor')) { S.st.floor = t.value.trim().slice(0, 8); stChanged(); }
-  else if (t.dataset.set) { const k = t.dataset.set; let v = t.value.trim(); if (k === 'repo' && !REPO_RE.test(v)) { toast('That does not look like owner/name.'); t.value = S.settings.repo; return; } if (k === 'preview' && v && !DATE_RE.test(v)) v = ''; if (k === 'token') v = v.replace(/\s+/g, ''); S.settings[k] = v; saveSettings(); if (k === 'mode' || k === 'preview') render(); if (k === 'token') { t.value = v; const ki = $('#keyinfo'); if (ki) ki.textContent = keyInfo(v); } }
+  else if (t.dataset.set) { const k = t.dataset.set; let v = t.value.trim(); if (k === 'repo' && !REPO_RE.test(v)) { toast('That does not look like owner/name.'); t.value = S.settings.repo; return; } if (k === 'preview' && v && !DATE_RE.test(v)) v = ''; if (k === 'token') v = v.replace(/\s+/g, ''); S.settings[k] = v; saveSettings(); if (k === 'mode' || k === 'preview' || k === 'breaks') render(); if (k === 'token') { t.value = v; const ki = $('#keyinfo'); if (ki) ki.textContent = keyInfo(v); } }
   else if (t.dataset.card) { S.settings.card[t.dataset.card] = t.value.slice(0, 1500); saveSettings(); }
   else if (t.hasAttribute('data-pick') && t.value) { const [m, ...n] = t.value.split('|'), f = $('#logform'); f.b.value = m; f.place.value = n.join('|'); }
   else if (t.hasAttribute('data-import') && t.files[0]) { try { const j = JSON.parse(await t.files[0].text()); if (j.app !== 'trailbook') throw new Error('not a Trail Book backup'); const before = Object.keys(S.logs).length; Object.values(j.logs || {}).forEach(e => { const c = cleanEntry(e); if (c && (!S.logs[c.date] || (c.t || 0) > (S.logs[c.date].t || 0))) { S.logs[c.date] = c; markDirty(c.date); } }); const st = cleanSt(j.st); if (st.updated > S.st.updated) { S.st = st; S.meta.stDirty = true; } await saveLogs(); await saveSt(); await saveMeta(); toast(`Restored. ${Object.keys(S.logs).length - before} new entries.`); render(); } catch (e) { toast('Could not restore: ' + e.message); } }
