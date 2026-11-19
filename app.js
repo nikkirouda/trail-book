@@ -2,7 +2,7 @@
    This file is code only. It holds no plan, no dates, no names and no log: those are fetched once from a
    private repository with a key the owner pastes in, and are then kept on the device for offline use. */
 'use strict';
-const VERSION = '0.2.0';
+const VERSION = '0.2.1';
 let TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';      // replaced by the plan's own time zone once a plan is loaded
 const DEF = { start: 'the start', end: 'the finish', endName: 'The finish', tzName: 'local time', quiet: 'remote country', who: 'a hiker on the trail', floorNote: '', coldName: '', coldMile: null, coldAfter: '', coldWarn: '', dirNote: 'from the start', mapCredit: 'Topographic base: USGS The National Map.' };
 const L = k => (S.plan && S.plan.meta && S.plan.meta.labels && S.plan.meta.labels[k] != null) ? S.plan.meta.labels[k] : DEF[k];
@@ -425,7 +425,7 @@ const C = k => (P() && P().content && P().content[k]) || null;
 const ul = (a, cls) => (a && a.length) ? `<ul${cls ? ` class="${cls}"` : ''}>${a.map(x => `<li>${esc(typeof x === 'string' ? x : x.text || JSON.stringify(x))}</li>`).join('')}</ul>` : '';
 const sect = (title, a) => (a && a.length) ? `<h3>${esc(title)}</h3>${ul(a)}` : '';
 const srcs = a => (a && a.length) ? `<h3>Sources</h3><ul class="small muted">${a.map(s => `<li>${esc(s.name || '')}${s.url ? '<br>' + esc(s.url) : ''}</li>`).join('')}</ul>` : '';
-V.more = () => `<h1>More</h1><ul class="list card">${[['#/map', 'Map', 'The trail, shelters, roads and your position; topographic where downloaded'], ['#/maps', 'Offline maps', 'Download topographic maps section by section'], ['#/guide', 'Survival guide', 'Fords, cold, weather, injury, water, ticks, bears'], ['#/gear', 'Gear checklist', 'What to carry, what to swap and where'], ['#/rules', 'Rules and permits', 'Where you may sleep, fees, closures, hunting'], ['#/sos', 'Emergency', 'What to do, numbers, your position'], ['#/plan/docs', 'Papers', 'The plan and all the research, in full'], ['#/settings', 'Settings', 'Key, sync, backup']].map(([h, t, s]) => `<li><a class="item" href="${h}"><span class="t">${t}<span class="sub">${s}</span></span><span class="r">›</span></a></li>`).join('')}</ul><p class="small muted">Trail Book ${VERSION}${P() ? ' · plan built ' + esc(P().meta.built) : ''}</p>`;
+V.more = () => `<h1>More</h1><ul class="list card">${[['#/maps', 'Offline maps', 'Download topographic maps section by section'], ['#/guide', 'Survival guide', 'Fords, cold, weather, injury, water, ticks, bears'], ['#/gear', 'Gear checklist', 'What to carry, what to swap and where'], ['#/rules', 'Rules and permits', 'Where you may sleep, fees, closures, hunting'], ['#/sos', 'Emergency', 'What to do, numbers, your position'], ['#/plan/docs', 'Papers', 'The plan and all the research, in full'], ['#/settings', 'Settings', 'Key, sync, backup']].map(([h, t, s]) => `<li><a class="item" href="${h}"><span class="t">${t}<span class="sub">${s}</span></span><span class="r">›</span></a></li>`).join('')}</ul><p class="small muted">Trail Book ${VERSION}${P() ? ' · plan built ' + esc(P().meta.built) : ''}</p>`;
 V.guide = id => {
   const g = C('guide'); if (!g) return '<h1>Survival guide</h1><div class="card"><p class="muted">The guide has not been loaded to this phone yet. Sync once with signal.</p></div>';
   if (!id) return `<h1>Survival guide</h1><p class="small muted">What the authorities say, from the research. Not a substitute for judgement, training or a physician.</p><ul class="list card">${g.cards.map(c => `<li><a class="item" href="#/guide/${esc(c.id)}"><span class="t">${esc(c.title)}<span class="sub">${esc(c.headline || '')}</span></span><span class="r">›</span></a></li>`).join('')}</ul>`;
@@ -500,7 +500,7 @@ function tileSet(sec) {
     for (let fy = -1; fy <= 1; fy += 0.5) for (let fx = -1; fx <= 1; fx += 0.5) set.add(z + '/' + Math.floor((lo + fx * dlon + 180) / 360 * n) + '/' + Math.floor(merc.y(la + fy * dlat, z) / 256)); } }
   return (MAP.sets[sec.id] = [...set]);
 }
-async function downloadSection(id) {
+async function downloadSection(id, quiet) {
   const sec = sections().find(x => x.id === id); if (!sec || S.dl) return; if (!navigator.onLine) return toast('No signal. Maps can only be downloaded with a connection; Wi-Fi is best.');
   const keys = tileSet(sec); S.dl = { id, n: keys.length, done: 0, fail: 0, stop: false };
   let have; try { have = new Set(await db.tkeys()); } catch (e) { S.dl = null; return toast('This browser will not store maps: ' + e.message); }
@@ -510,7 +510,21 @@ async function downloadSection(id) {
     if (buf.length >= 40) await flush(); const el = $('#dlp'); if (el) el.textContent = `${S.dl.done} of ${S.dl.n} map tiles${S.dl.fail ? ', ' + S.dl.fail + ' failed so far' : ''}…`; } };
   try { await Promise.all([1, 2, 3, 4, 5, 6].map(worker)); await flush(); } catch (e) { toast('Storing the maps failed: ' + e.message); }
   S.meta.maps[id] = { n: S.dl.n, done: S.dl.done, at: Date.now() }; await saveMeta(); const d = S.dl; S.dl = null; MAP.bm.clear();
-  toast(d.done >= d.n ? 'Maps for this section are on the device.' : `${d.done} of ${d.n} stored. Tap Download again to fetch the rest.`); render();
+  if (!quiet) toast(d.done >= d.n ? 'Maps for this section are on the device.' : `${d.done} of ${d.n} stored. Tap Download again to fetch the rest.`); render();
+  return d.done >= d.n;
+}
+const mapDone = sec => { const m = S.meta.maps[sec.id]; return !!(m && m.done >= m.n); };
+async function downloadAll() {
+  if (S.dl || S.all) return; if (!navigator.onLine) return toast('No signal. Maps can only be downloaded with a connection; Wi-Fi is best.');
+  const secs = sections().filter(x => !mapDone(x)); if (!secs.length) return toast('Every section is already on this device.');
+  const n = secs.reduce((a, x) => a + tileSet(x).length, 0), mb = Math.round(n * TILE_KB / 1024);
+  try { const e = navigator.storage && navigator.storage.estimate ? await navigator.storage.estimate() : null; if (e && e.quota && e.quota - (e.usage || 0) < n * TILE_KB * 1024 * 1.25) return toast(`Not enough room on this device: about ${mb} MB is needed. Download section by section instead.`); } catch (e) { /* carry on */ }
+  if (!confirm(`Download maps for ${secs.length} section${secs.length === 1 ? '' : 's'}, about ${mb} MB? Use Wi-Fi and keep the app open on screen. It can take several minutes.`)) return;
+  let lock = null; try { lock = await navigator.wakeLock.request('screen'); } catch (e) { /* the screen may sleep; the download resumes when asked again */ }
+  S.all = { i: 0, n: secs.length, stop: false }; let ok = 0;
+  for (const sec of secs) { if (S.all.stop || !navigator.onLine) break; S.all.i++; if (await downloadSection(sec.id, true)) ok++; }
+  S.all = null; if (lock) { try { lock.release(); } catch (e) { /* ignore */ } }
+  toast(ok === secs.length ? 'All maps are on this device.' : `${ok} of ${secs.length} sections finished. Tap Download all again to carry on from where it stopped.`); render();
 }
 async function deleteSection(id) { const secs = sections(), sec = secs.find(x => x.id === id); if (!sec) return; const keep = new Set(); secs.forEach(o => { if (o.id !== id && S.meta.maps[o.id]) tileSet(o).forEach(k => keep.add(k)); }); await db.tdel(tileSet(sec).filter(k => !keep.has(k))); delete S.meta.maps[id]; await saveMeta(); MAP.bm.clear(); toast('Removed.'); render(); }
 function tileBm(key) {
@@ -580,7 +594,9 @@ V.map = (kind, arg) => {
 V.maps = () => {
   if (!P() || !S.track) return needPlan(); const secs = sections();
   let h = `<h1>Offline maps</h1><p class="small muted">Topographic maps from the US Geological Survey, kept on this device for use with no signal: detailed within about ${LEVELS[LEVELS.length - 1][1]} mile of the trail, coarser out to ${LEVELS[0][1]} miles. Download on Wi-Fi. Sizes are estimates.</p><p class="small" id="store"></p>`;
-  if (S.dl) h += `<div class="box amber"><b>Downloading…</b> <span id="dlp">${S.dl.done} of ${S.dl.n} map tiles…</span> Keep the app open.<div class="btns"><button class="btn ghost" data-act="stopmap">Stop</button></div></div>`;
+  const left = secs.filter(x => !mapDone(x)), leftMb = Math.round(left.reduce((a, x) => a + tileSet(x).length, 0) * TILE_KB / 1024);
+  if (!S.dl) h += left.length ? `<div class="btns"><button class="btn block" data-act="dlall">Download all ${left.length === secs.length ? '' : 'remaining '}${left.length} section${left.length === 1 ? '' : 's'} (about ${int(leftMb)} MB)</button></div>` : `<div class="box green">Every section is on this device.</div>`;
+  if (S.dl) h += `<div class="box amber"><b>Downloading${S.all ? ` section ${S.all.i} of ${S.all.n}` : ''}…</b> <span id="dlp">${S.dl.done} of ${S.dl.n} map tiles…</span> Keep the app open.<div class="btns"><button class="btn ghost" data-act="stopmap">Stop</button></div></div>`;
   h += secs.map(sec => { const n = tileSet(sec).length, m = S.meta.maps[sec.id], full = m && m.done >= m.n;
     return `<div class="card"><p class="kicker">Mile ${num(sec.a)} to ${num(sec.b)} · about ${int(n * TILE_KB / 1024)} MB</p><h2>${esc(sec.name)}</h2><p class="small ${full ? '' : 'muted'}">${m ? (full ? `On this device (${int(m.n)} map tiles, ${esc(new Date(m.at).toLocaleDateString('en-US', { timeZone: TZ }))}).` : `Partly stored: ${int(m.done)} of ${int(m.n)}.`) : 'Not downloaded.'}</p>
     <div class="btns">${full ? '' : `<button class="btn" data-act="dlmap" data-id="${sec.id}" ${S.dl ? 'disabled' : ''}>${m ? 'Download the rest' : 'Download'}</button>`}<a class="btn ghost" href="#/map/at/${((sec.a + sec.b) / 2).toFixed(1)}">Look</a>${m ? `<button class="btn ghost" data-act="delmap" data-id="${sec.id}" ${S.dl ? 'disabled' : ''}>Remove</button>` : ''}</div></div>`; }).join('');
@@ -588,8 +604,8 @@ V.maps = () => {
 };
 
 /* ---------- router ---------- */
-const ICON = { today: '<path d="M3 12l9-8 9 8"/><path d="M5 10v10h14V10"/>', plan: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>', stops: '<path d="M12 21s7-6.2 7-11a7 7 0 10-14 0c0 4.8 7 11 7 11z"/><circle cx="12" cy="10" r="2.5"/>', log: '<path d="M4 20h16M6 16l9-9 3 3-9 9H6z"/>', more: '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>' };
-function tabs(cur) { const t = isHome() ? [['today', 'Home'], ['plan', 'Plan'], ['stops', 'Stops'], ['log', 'Log'], ['more', 'More']] : [['today', 'Today'], ['plan', 'Plan'], ['stops', 'Stops'], ['log', 'Log'], ['more', 'More']];
+const ICON = { today: '<path d="M3 12l9-8 9 8"/><path d="M5 10v10h14V10"/>', plan: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>', stops: '<path d="M12 21s7-6.2 7-11a7 7 0 10-14 0c0 4.8 7 11 7 11z"/><circle cx="12" cy="10" r="2.5"/>', log: '<path d="M4 20h16M6 16l9-9 3 3-9 9H6z"/>', more: '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>', map: '<path d="M9 4L3 6v14l6-2 6 2 6-2V4l-6 2-6-2z"/><path d="M9 4v14M15 6v14"/>' };
+function tabs(cur) { const t = [['today', isHome() ? 'Home' : 'Today'], ['plan', 'Plan'], ['map', 'Map'], ['stops', 'Stops'], ['log', 'Log'], ['more', 'More']];
   $('#tabs').innerHTML = t.map(([k, l]) => `<a href="#/${k}" ${cur === k ? 'aria-current="page"' : ''}><svg viewBox="0 0 24 24" aria-hidden="true">${ICON[k]}</svg>${l}</a>`).join(''); }
 function render() {
   const parts = location.hash.replace(/^#\/?/, '').split('/').map(decodeURIComponent), r = parts[0] || 'today'; let html, tab = r;
@@ -603,8 +619,8 @@ function render() {
     else if (r === 'resupply') { html = V.resupply(parts[1]); tab = 'stops'; }
     else if (r === 'log') html = parts[1] === 'edit' ? (isHome() ? V.log() : V.edit(parts[2])) : V.log(parts[1]);
     else if (['guide', 'rules'].includes(r)) { html = V[r](parts[1]); tab = 'more'; }
-    else if (r === 'map') { html = V.map(parts[1], parts[2]); tab = 'more'; }
-    else if (r === 'maps') { html = V.maps(); tab = 'more'; }
+    else if (r === 'map') html = V.map(parts[1], parts[2]);
+    else if (r === 'maps') { html = V.maps(); tab = 'map'; }
     else if (['gear', 'sos', 'settings', 'more'].includes(r)) { html = V[r](); tab = 'more'; }
     else html = V.today(), tab = 'today';
   } catch (e) { html = `<div class="card"><h2>Something went wrong on this page</h2><p class="muted">${esc(e.message)}</p><a class="btn" href="#/today">Back to the start</a></div>`; }
@@ -636,7 +652,8 @@ document.addEventListener('click', async ev => {
   else if (act === 'zin' || act === 'zout') { MAP.z = Math.max(8, Math.min(16.5, MAP.z + (act === 'zin' ? 1 : -1))); mapDraw(); }
   else if (act === 'mapme') locate(g => { MAP.lat = g.lat; MAP.lon = g.lon; if (MAP.z < 14) MAP.z = 14; mapDraw(); mapInfo(g.mile != null ? `You: mile ${num(g.mile)}${g.offFt > 1500 ? ', about ' + (g.offFt > 5280 ? num(g.offFt / 5280) + ' miles' : int(g.offFt) + ' ft') + ' from the trail' : ''}. Fix within ${int(g.acc * 3.28)} ft.` : 'Position found.'); const bt = $('[data-act=mapme]'); if (bt) bt.textContent = 'Find me'; })
   else if (act === 'dlmap') downloadSection(b.dataset.id);
-  else if (act === 'stopmap') { if (S.dl) S.dl.stop = true; }
+  else if (act === 'dlall') downloadAll();
+  else if (act === 'stopmap') { if (S.all) S.all.stop = true; if (S.dl) S.dl.stop = true; }
   else if (act === 'delmap') { if (confirm('Remove this section\'s topographic maps from the device?')) deleteSection(b.dataset.id); }
   else if (act === 'gpslog') locate(g => { const f = $('#logform'); if (f && g.mile != null) { const keep = new FormData(f); S.draft = Object.fromEntries(keep.entries()); S.draft.wx = keep.getAll('wx'); S.draft.b = g.mile.toFixed(1); const near = P().points.filter(p => p.k !== 'r' && Math.abs(p.m - g.mile) < 0.25)[0]; if (near && !S.draft.place) S.draft.place = near.n; S.draft.lat = g.lat; S.draft.lon = g.lon; } render(); applyDraft(); toast(g.offFt > 1500 ? 'You appear to be off the trail; mile is the nearest point.' : 'Mile filled from GPS.'); });
   else if (act === 'sync') sync(true);
