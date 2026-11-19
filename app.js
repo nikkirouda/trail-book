@@ -2,9 +2,9 @@
    This file is code only. It holds no plan, no dates, no names and no log: those are fetched once from a
    private repository with a key the owner pastes in, and are then kept on the device for offline use. */
 'use strict';
-const VERSION = '0.1.4';
+const VERSION = '0.2.0';
 let TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';      // replaced by the plan's own time zone once a plan is loaded
-const DEF = { start: 'the start', end: 'the finish', endName: 'The finish', tzName: 'local time', quiet: 'remote country', who: 'a hiker on the trail', floorNote: '', coldName: '', coldMile: null, coldAfter: '', coldWarn: '', dirNote: 'from the start' };
+const DEF = { start: 'the start', end: 'the finish', endName: 'The finish', tzName: 'local time', quiet: 'remote country', who: 'a hiker on the trail', floorNote: '', coldName: '', coldMile: null, coldAfter: '', coldWarn: '', dirNote: 'from the start', mapCredit: 'Topographic base: USGS The National Map.' };
 const L = k => (S.plan && S.plan.meta && S.plan.meta.labels && S.plan.meta.labels[k] != null) ? S.plan.meta.labels[k] : DEF[k];
 const COMMITTER = { name: 'Trail Book', email: '102565410+nikkirouda@users.noreply.github.com' };
 const REPO_RE = /^[A-Za-z0-9_.-]{1,39}\/[A-Za-z0-9_.-]{1,100}$/;
@@ -27,17 +27,21 @@ const fmtT = d => d ? d.toLocaleTimeString('en-US', { timeZone: TZ, hour: 'numer
 
 /* ---------- storage ---------- */
 const db = (() => {
-  let p; const open = () => p || (p = new Promise((res, rej) => { const r = indexedDB.open('trailbook', 1); r.onupgradeneeded = () => r.result.createObjectStore('kv'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }));
+  let p; const open = () => p || (p = new Promise((res, rej) => { const r = indexedDB.open('trailbook', 2); r.onupgradeneeded = () => { const d = r.result; if (!d.objectStoreNames.contains('kv')) d.createObjectStore('kv'); if (!d.objectStoreNames.contains('tiles')) d.createObjectStore('tiles'); }; r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); r.onblocked = () => rej(new Error('close other Trail Book tabs')); }));
+  const tx = (mode, fn) => open().then(d => new Promise((res, rej) => { const t = d.transaction('tiles', mode), out = fn(t.objectStore('tiles')); t.oncomplete = () => res(out && out.result); t.onerror = () => rej(t.error); t.onabort = () => rej(t.error); }));
   return {
+    tget: k => tx('readonly', st => st.get(k)), tkeys: () => tx('readonly', st => st.getAllKeys()),
+    tput: list => list.length ? tx('readwrite', st => { list.forEach(([k, v]) => st.put(v, k)); }) : Promise.resolve(),
+    tdel: keys => keys.length ? tx('readwrite', st => { keys.forEach(k => st.delete(k)); }) : Promise.resolve(),
     get: k => open().then(d => new Promise((res, rej) => { const q = d.transaction('kv').objectStore('kv').get(k); q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error); })),
     set: (k, v) => open().then(d => new Promise((res, rej) => { const t = d.transaction('kv', 'readwrite'); t.objectStore('kv').put(v, k); t.oncomplete = () => res(); t.onerror = () => rej(t.error); })),
-    clear: () => open().then(d => new Promise((res, rej) => { const t = d.transaction('kv', 'readwrite'); t.objectStore('kv').clear(); t.oncomplete = () => res(); t.onerror = () => rej(t.error); }))
+    clear: () => open().then(d => new Promise((res, rej) => { const t = d.transaction(['kv', 'tiles'], 'readwrite'); t.objectStore('kv').clear(); t.objectStore('tiles').clear(); t.oncomplete = () => res(); t.onerror = () => rej(t.error); }))
   };
 })();
 const S = {
   settings: { mode: 'hiker', repo: '', token: '', preview: '', card: { name: '', contact: '', medical: '' } },
   plan: null, track: null, logs: {}, st: { todo: {}, gear: {}, oz: {}, floor: '', updated: 0 },
-  meta: { shas: {}, dirty: [], stDirty: false, lastSync: 0, lastErr: '' }, gps: null, busy: false
+  meta: { shas: {}, dirty: [], stDirty: false, lastSync: 0, lastErr: '', maps: {} }, gps: null, busy: false
 };
 function loadSettings() { try { const s = JSON.parse(localStorage.getItem('tb.settings') || '{}'); Object.assign(S.settings, s, { card: Object.assign({}, S.settings.card, s.card || {}) }); } catch (e) { /* first run */ } if (!REPO_RE.test(S.settings.repo)) S.settings.repo = ''; }
 function saveSettings() { try { localStorage.setItem('tb.settings', JSON.stringify(S.settings)); } catch (e) { toast('This browser is not keeping settings.'); } }
@@ -221,6 +225,7 @@ function dayCard(d, opts) {
   if (d.note) h += `<div class="note"><span class="flag">${d.kind === 'town' || rest ? 'TOWN' : 'NOTE'}</span>${esc(d.note)}</div>`;
   h += d.notes.map(noteHtml).join('');
   if (d.roads.length) h += `<p class="small"><b>Roads crossed (ways out):</b> ${d.roads.map(esc).join(' · ')}</p>`;
+  if (!rest) h += `<a class="btn ghost block" href="#/map/day/${d.day}">Show this day on the map</a>`;
   return h + '</div>';
 }
 function mdToHtml(md) {
@@ -298,7 +303,7 @@ function whereCard(d) {
     if (d && d.mi > 0 && g.mile < d.b) h += `<p>To tonight's stop (${esc(d.to)}): <b class="num">${num(d.b - g.mile)} mi</b>, ${int(climb(g.mile, d.b))} ft of climb, about ${num(hrsAt(g.mile, d.b, P().meta.mph))} h at plan pace, ${num(hrsAt(g.mile, d.b, 2))} h at book pace.</p>`;
     h += '<ul class="list">' + sitesAhead(g.mile, 6).map(p => `<li><span class="item"><span class="d">${num(p.m - g.mile)} mi</span><span class="t">${esc(p.n)}<span class="sub">${KIND[p.k]}${p.off > 500 ? ' · ' + int(p.off) + ' ft off trail' : ''}${p.food ? ' · ' + esc(p.food) : ''}</span></span><span class="r">${num(p.m)}</span></span></li>`).join('') + '</ul>';
   } else if (!g || !g.err) h += '<p class="muted">Uses the phone\'s GPS. It works with no signal. It is an aid only: carry the paper map.</p>';
-  return h + `<div class="btns"><button class="btn" data-act="gps">${g && g.wait ? 'Finding you…' : 'Find me on the trail'}</button>${g && g.mile != null ? `<a class="btn ghost" href="geo:${g.lat.toFixed(5)},${g.lon.toFixed(5)}">Open in maps</a>` : ''}</div></div>`;
+  return h + `<div class="btns"><button class="btn" data-act="gps">${g && g.wait ? 'Finding you…' : 'Find me on the trail'}</button>${g && g.lat != null ? `<a class="btn ghost" href="#/map/me">Show me on the map</a>` : `<a class="btn ghost" href="#/map">Map</a>`}</div></div>`;
 }
 V.today = () => {
   if (!P()) return needPlan();
@@ -420,7 +425,7 @@ const C = k => (P() && P().content && P().content[k]) || null;
 const ul = (a, cls) => (a && a.length) ? `<ul${cls ? ` class="${cls}"` : ''}>${a.map(x => `<li>${esc(typeof x === 'string' ? x : x.text || JSON.stringify(x))}</li>`).join('')}</ul>` : '';
 const sect = (title, a) => (a && a.length) ? `<h3>${esc(title)}</h3>${ul(a)}` : '';
 const srcs = a => (a && a.length) ? `<h3>Sources</h3><ul class="small muted">${a.map(s => `<li>${esc(s.name || '')}${s.url ? '<br>' + esc(s.url) : ''}</li>`).join('')}</ul>` : '';
-V.more = () => `<h1>More</h1><ul class="list card">${[['#/guide', 'Survival guide', 'Fords, cold, weather, injury, water, ticks, bears'], ['#/gear', 'Gear checklist', 'What to carry, what to swap and where'], ['#/rules', 'Rules and permits', 'Where you may sleep, fees, closures, hunting'], ['#/sos', 'Emergency', 'What to do, numbers, your position'], ['#/plan/docs', 'Papers', 'The plan and all the research, in full'], ['#/settings', 'Settings', 'Key, sync, backup']].map(([h, t, s]) => `<li><a class="item" href="${h}"><span class="t">${t}<span class="sub">${s}</span></span><span class="r">›</span></a></li>`).join('')}</ul><p class="small muted">Trail Book ${VERSION}${P() ? ' · plan built ' + esc(P().meta.built) : ''}</p>`;
+V.more = () => `<h1>More</h1><ul class="list card">${[['#/map', 'Map', 'The trail, shelters, roads and your position; topographic where downloaded'], ['#/maps', 'Offline maps', 'Download topographic maps section by section'], ['#/guide', 'Survival guide', 'Fords, cold, weather, injury, water, ticks, bears'], ['#/gear', 'Gear checklist', 'What to carry, what to swap and where'], ['#/rules', 'Rules and permits', 'Where you may sleep, fees, closures, hunting'], ['#/sos', 'Emergency', 'What to do, numbers, your position'], ['#/plan/docs', 'Papers', 'The plan and all the research, in full'], ['#/settings', 'Settings', 'Key, sync, backup']].map(([h, t, s]) => `<li><a class="item" href="${h}"><span class="t">${t}<span class="sub">${s}</span></span><span class="r">›</span></a></li>`).join('')}</ul><p class="small muted">Trail Book ${VERSION}${P() ? ' · plan built ' + esc(P().meta.built) : ''}</p>`;
 V.guide = id => {
   const g = C('guide'); if (!g) return '<h1>Survival guide</h1><div class="card"><p class="muted">The guide has not been loaded to this phone yet. Sync once with signal.</p></div>';
   if (!id) return `<h1>Survival guide</h1><p class="small muted">What the authorities say, from the research. Not a substitute for judgement, training or a physician.</p><ul class="list card">${g.cards.map(c => `<li><a class="item" href="#/guide/${esc(c.id)}"><span class="t">${esc(c.title)}<span class="sub">${esc(c.headline || '')}</span></span><span class="r">›</span></a></li>`).join('')}</ul>`;
@@ -481,6 +486,107 @@ V.settings = () => {
   <p class="small muted">Trail Book ${VERSION}. Position, sun times and pace are aids, not instruments. Carry the paper map.</p>`;
 };
 
+/* ---------- maps: the trail drawn from the plan's own data, over topographic tiles where downloaded ---------- */
+const TILE_URL = (z, x, y) => `https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/tile/${z}/${y}/${x}`;
+const LEVELS = [[10, 8], [12, 4], [14, 1.5], [15, 0.75]];       // zoom level, and miles kept either side of the trail
+const TILE_KB = 18;
+const merc = { x: (lon, z) => (lon + 180) / 360 * 256 * 2 ** z, y: (lat, z) => (1 - Math.asinh(Math.tan(lat * Math.PI / 180)) / Math.PI) / 2 * 256 * 2 ** z,
+  lon: (x, z) => x / (256 * 2 ** z) * 360 - 180, lat: (y, z) => Math.atan(Math.sinh(Math.PI * (1 - 2 * y / (256 * 2 ** z)))) * 180 / Math.PI };
+const MAP = { lat: 0, lon: 0, z: 12, ready: false, bm: new Map(), hi: null, sets: {}, raf: 0 };
+function sections() { const ts = P().towns.filter(t => t.kind === 'town' && t.zero > 0), cuts = [0].concat(ts.map(t => t.m), [total()]), names = [L('start')].concat(ts.map(t => t.name), [L('endName')]); return cuts.slice(0, -1).map((a, i) => ({ id: 's' + i, a, b: cuts[i + 1], name: names[i] + ' to ' + names[i + 1] })); }
+function tileSet(sec) {
+  if (MAP.sets[sec.id]) return MAP.sets[sec.id]; const T = S.track, set = new Set(), i0 = idxAt(sec.a), i1 = idxAt(sec.b);
+  for (const [z, buf] of LEVELS) { const n = 2 ** z; for (let i = i0; i <= i1; i += 2) { const la = T.lat[i], lo = T.lon[i], dlat = buf / 69, dlon = buf / (69 * Math.cos(la * Math.PI / 180));
+    for (let fy = -1; fy <= 1; fy += 0.5) for (let fx = -1; fx <= 1; fx += 0.5) set.add(z + '/' + Math.floor((lo + fx * dlon + 180) / 360 * n) + '/' + Math.floor(merc.y(la + fy * dlat, z) / 256)); } }
+  return (MAP.sets[sec.id] = [...set]);
+}
+async function downloadSection(id) {
+  const sec = sections().find(x => x.id === id); if (!sec || S.dl) return; if (!navigator.onLine) return toast('No signal. Maps can only be downloaded with a connection; Wi-Fi is best.');
+  const keys = tileSet(sec); S.dl = { id, n: keys.length, done: 0, fail: 0, stop: false };
+  let have; try { have = new Set(await db.tkeys()); } catch (e) { S.dl = null; return toast('This browser will not store maps: ' + e.message); }
+  const todo = keys.filter(k => !have.has(k)); S.dl.done = keys.length - todo.length; render();
+  let i = 0, buf = []; const flush = async () => { const w = buf; buf = []; await db.tput(w); };
+  const worker = async () => { while (i < todo.length && !S.dl.stop) { const k = todo[i++], p = k.split('/'); try { const r = await fetch(TILE_URL(p[0], p[1], p[2])); if (!r.ok) throw new Error('http'); const bl = await r.blob(); if (!/^image\//.test(bl.type) || bl.size < 100) throw new Error('not a tile'); buf.push([k, bl]); S.dl.done++; } catch (e) { S.dl.fail++; }
+    if (buf.length >= 40) await flush(); const el = $('#dlp'); if (el) el.textContent = `${S.dl.done} of ${S.dl.n} map tiles${S.dl.fail ? ', ' + S.dl.fail + ' failed so far' : ''}…`; } };
+  try { await Promise.all([1, 2, 3, 4, 5, 6].map(worker)); await flush(); } catch (e) { toast('Storing the maps failed: ' + e.message); }
+  S.meta.maps[id] = { n: S.dl.n, done: S.dl.done, at: Date.now() }; await saveMeta(); const d = S.dl; S.dl = null; MAP.bm.clear();
+  toast(d.done >= d.n ? 'Maps for this section are on the device.' : `${d.done} of ${d.n} stored. Tap Download again to fetch the rest.`); render();
+}
+async function deleteSection(id) { const secs = sections(), sec = secs.find(x => x.id === id); if (!sec) return; const keep = new Set(); secs.forEach(o => { if (o.id !== id && S.meta.maps[o.id]) tileSet(o).forEach(k => keep.add(k)); }); await db.tdel(tileSet(sec).filter(k => !keep.has(k))); delete S.meta.maps[id]; await saveMeta(); MAP.bm.clear(); toast('Removed.'); render(); }
+function tileBm(key) {
+  const c = MAP.bm.get(key); if (c !== undefined) return (c === 0 || c === 1) ? null : c; MAP.bm.set(key, 1);
+  db.tget(key).then(async bl => { if (!bl && navigator.onLine) { try { const p = key.split('/'), r = await fetch(TILE_URL(p[0], p[1], p[2])); if (r.ok) bl = await r.blob(); } catch (e) { /* stay blank */ } }
+    if (!bl) { MAP.bm.set(key, 0); return; } const bm = await createImageBitmap(bl); MAP.bm.set(key, bm);
+    if (MAP.bm.size > 240) { let n = 0; for (const [k, v] of MAP.bm) { if (n++ > 60) break; if (v && v.close) v.close(); MAP.bm.delete(k); } }
+    mapDraw(); }).catch(() => MAP.bm.set(key, 0));
+  return null;
+}
+function mapInfo(t) { const el = $('#mapinfo'); if (el) el.textContent = t; }
+function mapDraw() { if (MAP.raf) return; MAP.raf = requestAnimationFrame(() => { MAP.raf = 0; mapPaint(); }); }
+function mapPaint() {
+  const cv = $('#map'); if (!cv || !S.track) return; const dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight; if (!W || !H) return;
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
+  const g = cv.getContext('2d'), z = MAP.z, cx = merc.x(MAP.lon, z), cy = merc.y(MAP.lat, z), X = lon => merc.x(lon, z) - cx + W / 2, Y = lat => merc.y(lat, z) - cy + H / 2, T = S.track;
+  g.setTransform(dpr, 0, 0, dpr, 0, 0); g.fillStyle = '#e9e6da'; g.fillRect(0, 0, W, H);
+  const lv = LEVELS.map(l => l[0]); let ti = lv.findIndex(l => l >= z - 0.6); if (ti < 0) ti = lv.length - 1;
+  [lv[ti - 1], lv[ti]].forEach(l => { if (l == null) return; const ts = 256 * 2 ** (z - l), x0 = Math.floor((cx - W / 2) / ts), x1 = Math.floor((cx + W / 2) / ts), y0 = Math.floor((cy - H / 2) / ts), y1 = Math.floor((cy + H / 2) / ts);
+    if ((x1 - x0 + 1) * (y1 - y0 + 1) > 80) return; for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) { const bm = tileBm(l + '/' + x + '/' + y); if (bm) g.drawImage(bm, x * ts - cx + W / 2, y * ts - cy + H / 2, ts + 0.6, ts + 0.6); } });
+  const path = (i0, i1, step) => { g.beginPath(); let pen = false; for (let i = i0; i <= i1; i += step) { const x = X(T.lon[i]), y = Y(T.lat[i]); if (x < -80 || x > W + 80 || y < -80 || y > H + 80) { pen = false; continue; } if (pen) g.lineTo(x, y); else { g.moveTo(x, y); pen = true; } } };
+  const step = Math.max(1, Math.round(2 ** (13.5 - z))); g.lineJoin = 'round'; g.lineCap = 'round';
+  path(0, T.n - 1, step); g.strokeStyle = '#ffffff'; g.lineWidth = 6; g.stroke(); g.strokeStyle = '#c4121a'; g.lineWidth = 3; g.stroke();
+  if (MAP.hi) { path(idxAt(MAP.hi.a), idxAt(MAP.hi.b), Math.max(1, step >> 1)); g.strokeStyle = '#1d4ed8'; g.lineWidth = 4; g.stroke(); }
+  MAP.hit = []; g.font = '600 12px system-ui, sans-serif'; g.textBaseline = 'middle';
+  const boxes = [], label = (t, x, y) => { const w = g.measureText(t).width + 12, bx = [x + 6, y - 8, x + 6 + w, y + 8]; if (boxes.some(o => bx[0] < o[2] && bx[2] > o[0] && bx[1] < o[3] && bx[3] > o[1])) return; boxes.push(bx); g.lineWidth = 3; g.strokeStyle = 'rgba(255,255,255,.9)'; g.strokeText(t, x + 9, y); g.fillStyle = '#111'; g.fillText(t, x + 9, y); };
+  const mark = (p, x, y) => { g.lineWidth = 1.5; g.strokeStyle = '#fff';
+    if (p.k === 't') { g.fillStyle = '#111'; g.beginPath(); g.arc(x, y, 6, 0, 7); g.fill(); g.stroke(); }
+    else if (p.k === 'r') { g.fillStyle = '#fff'; g.strokeStyle = '#111'; g.beginPath(); g.arc(x, y, 4, 0, 7); g.fill(); g.stroke(); }
+    else if (p.k === 'c') { g.fillStyle = '#1b6b34'; g.fillRect(x - 5, y - 5, 10, 10); g.strokeRect(x - 5, y - 5, 10, 10); }
+    else { g.fillStyle = p.k === 'h' ? '#8a4b08' : '#1b6b34'; g.beginPath(); g.moveTo(x, y - 7); g.lineTo(x + 6.5, y + 5); g.lineTo(x - 6.5, y + 5); g.closePath(); g.fill(); g.stroke(); } };
+  const show = (p, la, lo) => { const x = X(lo), y = Y(la); if (x < -20 || x > W + 20 || y < -20 || y > H + 20) return; mark(p, x, y); MAP.hit.push([x, y, p]); if (p.k === 't' ? z >= 9.5 : z >= 13.2) label(p.n, x, y); };
+  if (z >= 11.3) P().points.forEach(p => { if (p.k === 'r' && z < 12.6) return; show(p, p.lat, p.lon); });
+  P().towns.forEach(t => { const i = idxAt(t.m); show({ k: 't', n: t.name, m: t.m, note: t.note }, T.lat[i], T.lon[i]); });
+  if (S.gps && S.gps.lat != null) { const x = X(S.gps.lon), y = Y(S.gps.lat), r = Math.max(8, (S.gps.acc || 0) / (156543.03 * Math.cos(MAP.lat * Math.PI / 180) / 2 ** z)); g.fillStyle = 'rgba(29,78,216,.18)'; g.beginPath(); g.arc(x, y, Math.min(r, 400), 0, 7); g.fill(); g.fillStyle = '#1d4ed8'; g.strokeStyle = '#fff'; g.lineWidth = 3; g.beginPath(); g.arc(x, y, 7, 0, 7); g.fill(); g.stroke(); }
+  const mpp = 156543.03 * Math.cos(MAP.lat * Math.PI / 180) / 2 ** z / 1609.344, nice = [0.1, 0.25, 0.5, 1, 2, 5, 10, 25, 50, 100].find(v => v / mpp >= 70) || 200, bw = nice / mpp;
+  g.fillStyle = 'rgba(255,255,255,.85)'; g.fillRect(8, H - 26, bw + 12, 20); g.strokeStyle = '#111'; g.lineWidth = 2; g.beginPath(); g.moveTo(14, H - 16); g.lineTo(14, H - 10); g.lineTo(14 + bw, H - 10); g.lineTo(14 + bw, H - 16); g.stroke(); g.fillStyle = '#111'; g.font = '600 11px system-ui, sans-serif'; g.fillText(nice + ' mi', 20, H - 18);
+}
+function mapAttach() {
+  const cv = $('#map'); if (!cv) return; const ptrs = new Map(); let moved = 0, pinch = 0, z0 = MAP.z;
+  const dist = () => { const a = [...ptrs.values()]; return Math.hypot(a[0].x - a[1].x, a[0].y - a[1].y); };
+  cv.addEventListener('pointerdown', e => { try { cv.setPointerCapture(e.pointerId); } catch (x) { /* ignore */ } ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY }); if (ptrs.size === 1) moved = 0; if (ptrs.size === 2) { pinch = dist(); z0 = MAP.z; moved = 99; } });
+  cv.addEventListener('pointermove', e => { const p = ptrs.get(e.pointerId); if (!p) return; const dx = e.clientX - p.x, dy = e.clientY - p.y; p.x = e.clientX; p.y = e.clientY;
+    if (ptrs.size === 1) { const z = MAP.z; MAP.lon = merc.lon(merc.x(MAP.lon, z) - dx, z); MAP.lat = Math.max(-80, Math.min(80, merc.lat(merc.y(MAP.lat, z) - dy, z))); moved += Math.abs(dx) + Math.abs(dy); }
+    else if (ptrs.size === 2 && pinch > 0) MAP.z = Math.max(8, Math.min(16.5, z0 + Math.log2(dist() / pinch)));
+    mapDraw(); });
+  const up = e => { const had = ptrs.has(e.pointerId); ptrs.delete(e.pointerId); if (ptrs.size < 2) pinch = 0; if (!had || e.type !== 'pointerup' || moved > 10 || ptrs.size) return;
+    const r = cv.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top; let best = null, bd = 26 * 26; (MAP.hit || []).forEach(h => { const d = (h[0] - x) ** 2 + (h[1] - y) ** 2; if (d < bd) { bd = d; best = h[2]; } });
+    if (best) mapInfo(`${best.n} · ${KIND[best.k]} · mile ${num(best.m)}${best.off > 500 ? ' · ' + int(best.off) + ' ft off the trail' : ''}${best.food ? ' · food storage: ' + best.food : ''}${best.note ? ' · ' + best.note : ''}`); };
+  cv.addEventListener('pointerup', up); cv.addEventListener('pointercancel', up);
+  cv.addEventListener('wheel', e => { e.preventDefault(); MAP.z = Math.max(8, Math.min(16.5, MAP.z - e.deltaY / 400)); mapDraw(); }, { passive: false });
+  mapDraw();
+}
+V.map = (kind, arg) => {
+  if (!P() || !S.track) return needPlan(); const T = S.track, at = (m, z) => { MAP.lat = interp(T.lat, m); MAP.lon = interp(T.lon, m); MAP.z = z; MAP.ready = true; };
+  let title = 'Map'; MAP.hi = null;
+  if (kind === 'day') { const d = P().days.find(x => x.day === +arg); if (d) { MAP.hi = { a: d.a, b: d.b }; at((d.a + d.b) / 2, d.mi > 12 ? 11.6 : 12.4); title = `Day ${d.day}: ${d.to}`; } }
+  else if (kind === 'at' && isFinite(+arg)) at(+arg, 14);
+  else if (kind === 'me' && S.gps && S.gps.lat != null) { MAP.lat = S.gps.lat; MAP.lon = S.gps.lon; MAP.z = 14; MAP.ready = true; }
+  if (!MAP.ready) at(myMile() != null ? myMile() : Math.max(2, mileOn(planArr(), today())), 11.5);
+  const have = Object.keys(S.meta.maps).length;
+  return `<h1>${esc(title)}</h1><div class="mapwrap"><canvas id="map" class="map" role="img" aria-label="Map of the trail"></canvas><div class="mapbtns"><button class="btn" data-act="zin" aria-label="Zoom in">+</button><button class="btn" data-act="zout" aria-label="Zoom out">−</button></div></div>
+  <div class="btns"><button class="btn" data-act="mapme">${S.gps && S.gps.wait ? 'Finding you…' : 'Find me'}</button><a class="btn ghost" href="#/maps">Offline maps</a></div>
+  <div class="card small" id="mapinfo">Drag to move, pinch to zoom, tap a marker for its name. Triangle: shelter. Square: campsite. Ring: road crossing. Dot: town.</div>
+  <p class="small muted">${have ? '' : 'No topographic maps are stored yet: with no signal you will see the trail and markers on a plain ground. '}${esc(L('mapCredit'))} An aid, not a navigation instrument: carry the paper map.</p>`;
+};
+V.maps = () => {
+  if (!P() || !S.track) return needPlan(); const secs = sections();
+  let h = `<h1>Offline maps</h1><p class="small muted">Topographic maps from the US Geological Survey, kept on this device for use with no signal: detailed within about ${LEVELS[LEVELS.length - 1][1]} mile of the trail, coarser out to ${LEVELS[0][1]} miles. Download on Wi-Fi. Sizes are estimates.</p><p class="small" id="store"></p>`;
+  if (S.dl) h += `<div class="box amber"><b>Downloading…</b> <span id="dlp">${S.dl.done} of ${S.dl.n} map tiles…</span> Keep the app open.<div class="btns"><button class="btn ghost" data-act="stopmap">Stop</button></div></div>`;
+  h += secs.map(sec => { const n = tileSet(sec).length, m = S.meta.maps[sec.id], full = m && m.done >= m.n;
+    return `<div class="card"><p class="kicker">Mile ${num(sec.a)} to ${num(sec.b)} · about ${int(n * TILE_KB / 1024)} MB</p><h2>${esc(sec.name)}</h2><p class="small ${full ? '' : 'muted'}">${m ? (full ? `On this device (${int(m.n)} map tiles, ${esc(new Date(m.at).toLocaleDateString('en-US', { timeZone: TZ }))}).` : `Partly stored: ${int(m.done)} of ${int(m.n)}.`) : 'Not downloaded.'}</p>
+    <div class="btns">${full ? '' : `<button class="btn" data-act="dlmap" data-id="${sec.id}" ${S.dl ? 'disabled' : ''}>${m ? 'Download the rest' : 'Download'}</button>`}<a class="btn ghost" href="#/map/at/${((sec.a + sec.b) / 2).toFixed(1)}">Look</a>${m ? `<button class="btn ghost" data-act="delmap" data-id="${sec.id}" ${S.dl ? 'disabled' : ''}>Remove</button>` : ''}</div></div>`; }).join('');
+  return h;
+};
+
 /* ---------- router ---------- */
 const ICON = { today: '<path d="M3 12l9-8 9 8"/><path d="M5 10v10h14V10"/>', plan: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>', stops: '<path d="M12 21s7-6.2 7-11a7 7 0 10-14 0c0 4.8 7 11 7 11z"/><circle cx="12" cy="10" r="2.5"/>', log: '<path d="M4 20h16M6 16l9-9 3 3-9 9H6z"/>', more: '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>' };
 function tabs(cur) { const t = isHome() ? [['today', 'Home'], ['plan', 'Plan'], ['stops', 'Stops'], ['log', 'Log'], ['more', 'More']] : [['today', 'Today'], ['plan', 'Plan'], ['stops', 'Stops'], ['log', 'Log'], ['more', 'More']];
@@ -497,10 +603,13 @@ function render() {
     else if (r === 'resupply') { html = V.resupply(parts[1]); tab = 'stops'; }
     else if (r === 'log') html = parts[1] === 'edit' ? (isHome() ? V.log() : V.edit(parts[2])) : V.log(parts[1]);
     else if (['guide', 'rules'].includes(r)) { html = V[r](parts[1]); tab = 'more'; }
+    else if (r === 'map') { html = V.map(parts[1], parts[2]); tab = 'more'; }
+    else if (r === 'maps') { html = V.maps(); tab = 'more'; }
     else if (['gear', 'sos', 'settings', 'more'].includes(r)) { html = V[r](); tab = 'more'; }
     else html = V.today(), tab = 'today';
   } catch (e) { html = `<div class="card"><h2>Something went wrong on this page</h2><p class="muted">${esc(e.message)}</p><a class="btn" href="#/today">Back to the start</a></div>`; }
-  $('#main').innerHTML = html; tabs(tab); setNet();
+  $('#main').innerHTML = html; tabs(tab); setNet(); mapAttach();
+  if (r === 'maps' && navigator.storage && navigator.storage.estimate) navigator.storage.estimate().then(e => { const el = $('#store'); if (el && e.quota) el.textContent = `This device: ${int((e.usage || 0) / 1048576)} MB used by Trail Book of about ${int(e.quota / 1048576)} MB the browser allows.`; });
   if (r === 'settings' && window.caches) caches.keys().then(ks => { const el = $('#offline'); if (el) { const ok = ks.some(k => k.startsWith('trailbook-shell')) && navigator.serviceWorker && navigator.serviceWorker.controller; el.textContent = ok ? 'Offline: ready. The app itself is stored on this device.' : 'Offline: not ready yet. Stay in signal, close the app and open it again, then look here once more.'; } });
   if (r === 'settings' && navigator.storage && navigator.storage.persisted) navigator.storage.persisted().then(p => { const el = $('#persist'); if (el) el.textContent = p ? 'This browser has promised to keep the data.' : 'This browser may clear the data if the phone runs short of space. Installing the app to the home screen makes that less likely; keep a backup file.'; });
 }
@@ -524,6 +633,11 @@ document.addEventListener('click', async ev => {
   const go = ev.target.closest('[data-go]'); if (go) { location.hash = go.dataset.go; return; }
   const b = ev.target.closest('[data-act]'); if (!b) return; const act = b.dataset.act;
   if (act === 'gps') locate();
+  else if (act === 'zin' || act === 'zout') { MAP.z = Math.max(8, Math.min(16.5, MAP.z + (act === 'zin' ? 1 : -1))); mapDraw(); }
+  else if (act === 'mapme') locate(g => { MAP.lat = g.lat; MAP.lon = g.lon; if (MAP.z < 14) MAP.z = 14; mapDraw(); mapInfo(g.mile != null ? `You: mile ${num(g.mile)}${g.offFt > 1500 ? ', about ' + (g.offFt > 5280 ? num(g.offFt / 5280) + ' miles' : int(g.offFt) + ' ft') + ' from the trail' : ''}. Fix within ${int(g.acc * 3.28)} ft.` : 'Position found.'); const bt = $('[data-act=mapme]'); if (bt) bt.textContent = 'Find me'; })
+  else if (act === 'dlmap') downloadSection(b.dataset.id);
+  else if (act === 'stopmap') { if (S.dl) S.dl.stop = true; }
+  else if (act === 'delmap') { if (confirm('Remove this section\'s topographic maps from the device?')) deleteSection(b.dataset.id); }
   else if (act === 'gpslog') locate(g => { const f = $('#logform'); if (f && g.mile != null) { const keep = new FormData(f); S.draft = Object.fromEntries(keep.entries()); S.draft.wx = keep.getAll('wx'); S.draft.b = g.mile.toFixed(1); const near = P().points.filter(p => p.k !== 'r' && Math.abs(p.m - g.mile) < 0.25)[0]; if (near && !S.draft.place) S.draft.place = near.n; S.draft.lat = g.lat; S.draft.lon = g.lon; } render(); applyDraft(); toast(g.offFt > 1500 ? 'You appear to be off the trail; mile is the nearest point.' : 'Mile filled from GPS.'); });
   else if (act === 'sync') sync(true);
   else if (act === 'acceptplan' && S.pending) { if (S.pending.plan) { await db.set('plan', S.pending.plan); usePlan(S.pending.plan); } if (S.pending.track) { await db.set('track', S.pending.track); S.track = decodeTrack(S.pending.track); } Object.assign(S.meta.shas, S.pending.shas); S.pending = null; await db.set('pending', null); await saveMeta(); toast('The new plan is in use.'); render(); }
@@ -557,7 +671,8 @@ document.addEventListener('submit', async ev => {
   if (e.b != null && (e.b < 0 || e.b > total() + 0.5)) return toast('That mile is not on the trail.');
   S.logs[date] = e; await saveLogs(); markDirty(date); toast('Saved on the phone.'); location.hash = '#/log'; sync(false);
 });
-window.addEventListener('online', () => { setNet(); sync(false); });
+window.addEventListener('online', () => { setNet(); sync(false); MAP.bm.forEach((v, k) => { if (v === 0) MAP.bm.delete(k); }); mapDraw(); });
+window.addEventListener('resize', () => mapDraw());
 window.addEventListener('offline', () => setNet());
 
 /* ---------- start ---------- */
@@ -567,7 +682,7 @@ window.addEventListener('offline', () => setNet());
     const [plan, track, logs, st, meta, pending] = await Promise.all(['plan', 'track', 'logs', 'st', 'meta', 'pending'].map(k => db.get(k)));
     const cp = cleanPlan(plan); if (cp) usePlan(cp); if (pending && pending.shas) S.pending = pending; if (track && track.n) S.track = decodeTrack(track);
     if (logs) Object.values(logs).forEach(e => { const c = cleanEntry(e); if (c) S.logs[c.date] = c; });
-    if (st) S.st = cleanSt(st); if (meta) Object.assign(S.meta, meta, { dirty: Array.isArray(meta.dirty) ? meta.dirty : [], shas: meta.shas || {} });
+    if (st) S.st = cleanSt(st); if (meta) Object.assign(S.meta, meta, { dirty: Array.isArray(meta.dirty) ? meta.dirty : [], shas: meta.shas || {}, maps: meta.maps || {} });
   } catch (e) { toast('This browser is blocking storage; nothing can be kept.'); }
   render(); lastHash = location.hash;
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});

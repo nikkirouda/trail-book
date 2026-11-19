@@ -141,3 +141,8 @@ input[type="checkbox"] { width: 24px; height: 24px; min-height: 0; padding: 0; f
 
 .oz { max-width: 96px; margin-top: 6px; min-height: 40px; padding: 7px 10px; }
 .tel .sub { display: block; }
+
+.mapwrap { position: relative; margin: 0 0 10px; }
+.map { display: block; width: 100%; height: min(64vh, 620px); min-height: 320px; touch-action: none; border-radius: 12px; border: 1px solid var(--line); background: #e9e6da; cursor: grab; }
+.mapbtns { position: absolute; right: 8px; top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.mapbtns .btn { width: 46px; padding: 0; font-size: 1.4rem; line-height: 1; box-shadow: 0 1px 4px rgba(0,0,0,.35); }
