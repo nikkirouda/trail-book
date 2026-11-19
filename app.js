@@ -2,7 +2,7 @@
    This file is code only. It holds no plan, no dates, no names and no log: those are fetched once from a
    private repository with a key the owner pastes in, and are then kept on the device for offline use. */
 'use strict';
-const VERSION = '0.1.0';
+const VERSION = '0.1.1';
 let TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';      // replaced by the plan's own time zone once a plan is loaded
 const DEF = { start: 'the start', end: 'the finish', endName: 'The finish', tzName: 'local time', quiet: 'remote country', who: 'a hiker on the trail', floorNote: '', coldName: '', coldMile: null, coldAfter: '', coldWarn: '', dirNote: 'from the start' };
 const L = k => (S.plan && S.plan.meta && S.plan.meta.labels && S.plan.meta.labels[k] != null) ? S.plan.meta.labels[k] : DEF[k];
@@ -468,7 +468,7 @@ V.settings = () => {
   <label for="repo">Repository (owner/name)</label><input id="repo" data-set="repo" value="${esc(s.repo)}" placeholder="owner/name" autocapitalize="off" spellcheck="false">
   <label for="tok">Key (GitHub fine-grained token)</label><input id="tok" type="password" data-set="token" value="${esc(s.token)}" autocomplete="off" autocapitalize="off" spellcheck="false">
   <div class="btns"><button class="btn" data-act="sync">Sync now</button><button class="btn ghost" data-act="test">Test the key</button></div>
-  <p class="small muted">Last sync: ${S.meta.lastSync ? esc(new Date(S.meta.lastSync).toLocaleString('en-US', { timeZone: TZ })) + ' ' + esc(L('tzName')) : 'never'}${pend ? ` · ${pend} change${pend === 1 ? '' : 's'} waiting for signal` : ''}${S.meta.lastErr ? ' · last problem: ' + esc(S.meta.lastErr) : ''}<br>Plan on this device: ${P() ? 'built ' + esc(P().meta.built) : 'none'} · trail line: ${S.track ? 'yes' : 'none'}</p></div>
+  <p class="small muted">Last sync: ${S.meta.lastSync ? esc(new Date(S.meta.lastSync).toLocaleString('en-US', { timeZone: TZ })) + ' ' + esc(L('tzName')) : 'never'}${pend ? ` · ${pend} change${pend === 1 ? '' : 's'} waiting for signal` : ''}${S.meta.lastErr ? ' · last problem: ' + esc(S.meta.lastErr) : ''}<br>Plan on this device: ${P() ? 'built ' + esc(P().meta.built) : 'none'} · trail line: ${S.track ? 'yes' : 'none'}</p><p class="small" id="offline"></p></div>
   ${isHome() ? '' : `<div class="card"><h2>About me (this phone only)</h2><p class="small muted">Shown on the Emergency page. Never sent anywhere.</p><label for="cn">Name</label><input id="cn" data-card="name" value="${esc(s.card.name)}"><label for="cc">Emergency contact (name and number)</label><input id="cc" data-card="contact" value="${esc(s.card.contact)}"><label for="cm">Medical notes (conditions, medicines, allergies, physician)</label><textarea id="cm" data-card="medical">${esc(s.card.medical)}</textarea></div>`}
   <div class="card"><h2>Preview a day</h2><p class="small muted">See the app as it will look on a day of the walk. Leave empty for today.</p><input type="date" data-set="preview" aria-label="Preview date" value="${esc(s.preview)}"></div>
   <div class="card"><h2>Backup</h2><p class="small muted">A copy of your log and checklists as a file, in case the phone or the sync fails.</p><div class="btns"><button class="btn ghost" data-act="export">Save a backup file</button><label class="btn ghost">Restore from a file<input type="file" accept="application/json,.json" data-import hidden></label></div>
@@ -496,6 +496,7 @@ function render() {
     else html = V.today(), tab = 'today';
   } catch (e) { html = `<div class="card"><h2>Something went wrong on this page</h2><p class="muted">${esc(e.message)}</p><a class="btn" href="#/today">Back to the start</a></div>`; }
   $('#main').innerHTML = html; tabs(tab); setNet();
+  if (r === 'settings' && window.caches) caches.keys().then(ks => { const el = $('#offline'); if (el) { const ok = ks.some(k => k.startsWith('trailbook-shell')) && navigator.serviceWorker && navigator.serviceWorker.controller; el.textContent = ok ? 'Offline: ready. The app itself is stored on this device.' : 'Offline: not ready yet. Stay in signal, close the app and open it again, then look here once more.'; } });
   if (r === 'settings' && navigator.storage && navigator.storage.persisted) navigator.storage.persisted().then(p => { const el = $('#persist'); if (el) el.textContent = p ? 'This browser has promised to keep the data.' : 'This browser may clear the data if the phone runs short of space. Installing the app to the home screen makes that less likely; keep a backup file.'; });
 }
 let lastHash = '';
