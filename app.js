@@ -2,7 +2,7 @@
    This file is code only. It holds no plan, no dates, no names and no log: those are fetched once from a
    private repository with a key the owner pastes in, and are then kept on the device for offline use. */
 'use strict';
-const VERSION = '0.1.3';
+const VERSION = '0.1.4';
 let TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';      // replaced by the plan's own time zone once a plan is loaded
 const DEF = { start: 'the start', end: 'the finish', endName: 'The finish', tzName: 'local time', quiet: 'remote country', who: 'a hiker on the trail', floorNote: '', coldName: '', coldMile: null, coldAfter: '', coldWarn: '', dirNote: 'from the start' };
 const L = k => (S.plan && S.plan.meta && S.plan.meta.labels && S.plan.meta.labels[k] != null) ? S.plan.meta.labels[k] : DEF[k];
@@ -294,7 +294,7 @@ function whereCard(d) {
   if (g && g.mile != null) {
     const off = g.offFt > 1500;
     h += `<p class="big num">Mile ${num(g.mile)}</p><p class="muted small">${int(g.el)} ft on the trail profile · fix within ${int(g.acc * 3.28)} ft · ${esc(fmtT(new Date(g.t)))}</p>`;
-    if (off) h += `<div class="box red"><b>You appear to be ${g.offFt > 5280 ? num(g.offFt / 5280) + ' miles' : int(g.offFt) + ' ft'} from the trail.</b> The mile shown is the nearest point on it. Check the paper map.</div>`;
+    if (off) h += `<div class="box ${g.offFt > 26400 ? 'amber' : 'red'}"><b>You appear to be ${g.offFt > 5280 ? num(g.offFt / 5280, g.offFt > 52800 ? 0 : 1) + ' miles' : int(g.offFt) + ' ft'} from the trail.</b> The mile shown is the nearest point on it.${g.offFt > 26400 ? '' : ' Check the paper map.'}</div>`;
     if (d && d.mi > 0 && g.mile < d.b) h += `<p>To tonight's stop (${esc(d.to)}): <b class="num">${num(d.b - g.mile)} mi</b>, ${int(climb(g.mile, d.b))} ft of climb, about ${num(hrsAt(g.mile, d.b, P().meta.mph))} h at plan pace, ${num(hrsAt(g.mile, d.b, 2))} h at book pace.</p>`;
     h += '<ul class="list">' + sitesAhead(g.mile, 6).map(p => `<li><span class="item"><span class="d">${num(p.m - g.mile)} mi</span><span class="t">${esc(p.n)}<span class="sub">${KIND[p.k]}${p.off > 500 ? ' · ' + int(p.off) + ' ft off trail' : ''}${p.food ? ' · ' + esc(p.food) : ''}</span></span><span class="r">${num(p.m)}</span></span></li>`).join('') + '</ul>';
   } else if (!g || !g.err) h += '<p class="muted">Uses the phone\'s GPS. It works with no signal. It is an aid only: carry the paper map.</p>';
@@ -309,7 +309,7 @@ V.today = () => {
   if (t < start) {
     const n = dayDiff(start, t), todo = P().calendar.filter(c => !S.st.todo[c.id]).slice(0, 3);
     h += `<h1>${n} days to ${esc(L('start'))}</h1><p class="muted">${esc(fmtDL(t))} · the plan is a ${esc(P().meta.status)}</p>
-    <div class="card"><h2>Next to do</h2>${todo.map(todoRow).join('') || '<p class="muted">Everything is ticked.</p>'}<a class="btn ghost block" href="#/plan/todo">All dates and bookings</a></div>` + dayCard(P().days[0], { tag: 'the first day' });
+    <div class="card"><h2>Next to do</h2>${todo.map(todoRow).join('') || '<p class="muted">Everything is ticked.</p>'}<a class="btn ghost block" href="#/plan/todo">All dates and bookings</a></div>` + whereCard(null) + dayCard(P().days[0], { tag: 'the first day' }) + `<div class="btns"><a class="btn ghost block" href="#/log/edit/${esc(t)}">Log a practice day</a></div>`;
   } else {
     const d = dayByDate(t) || P().days[P().days.length - 1];
     h += `<h1>${t > last ? 'After the plan\'s last day' : 'Today'}</h1><p class="muted">${esc(fmtDL(t))}</p>`;
