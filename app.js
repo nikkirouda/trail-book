@@ -2,7 +2,7 @@
    This file is code only. It holds no plan, no dates, no names and no log: those are fetched once from a
    private repository with a key the owner pastes in, and are then kept on the device for offline use. */
 'use strict';
-const VERSION = '0.2.2';
+const VERSION = '0.3.0';
 let TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';      // replaced by the plan's own time zone once a plan is loaded
 const DEF = { start: 'the start', end: 'the finish', endName: 'The finish', tzName: 'local time', quiet: 'remote country', who: 'a hiker on the trail', floorNote: '', coldName: '', coldMile: null, coldAfter: '', coldWarn: '', dirNote: 'from the start', mapCredit: 'Topographic base: USGS The National Map.' };
 const L = k => (S.plan && S.plan.meta && S.plan.meta.labels && S.plan.meta.labels[k] != null) ? S.plan.meta.labels[k] : DEF[k];
@@ -105,6 +105,10 @@ function sitesAhead(m, n, kinds) {
   return out.sort((a, b) => a.m - b.m).slice(0, n);
 }
 const KIND = { s: 'Shelter', c: 'Campsite', r: 'Road', t: 'Town', h: 'Hut: paid lodging, booking needed' };
+const shortName = n => String(n).replace(' Lean-to Shelter', ' Lean-to').replace(' Shelter Campsite', ' Shelter').replace(' Lean-to Campsite', ' Lean-to').replace(' Parking Area', '').replace(' Trailhead', '');
+const waterWord = w => w.k === 's' ? 'Spring or seep' : (w.c === 'river or pond' ? 'River or pond crossing' : 'Stream crossing' + (['perennial', 'intermittent', 'ephemeral'].includes(w.c) ? ', mapped as ' + w.c : ''));
+const waterAhead = (m, n, solid) => (P().water || []).filter(w => w.m > m + 0.02 && (!solid || w.k === 's' || w.c === 'perennial' || w.c === 'river or pond')).slice(0, n);
+const WATER_NOTE = 'From the US Geological Survey\'s map of where water runs. Nothing here has been seen on the ground: intermittent streams are often dry in late summer, and all water needs treating.';
 const nextTown = m => P().towns.filter(t => t.kind === 'town').find(t => t.m > m + 0.05);
 
 /* ---------- GitHub: the private data repository ---------- */
@@ -125,6 +129,7 @@ function cleanPlan(j) {
   if (!j.days.length) return null;
   j.control = (Array.isArray(j.control) ? j.control : []).filter(c => Array.isArray(c) && DATE_RE.test(c[0])).map(c => [c[0], n(c[1])]); if (!j.control.length) j.control = j.days.map(d => [d.date, d.b]);
   j.points = (Array.isArray(j.points) ? j.points : []).filter(p => p && 'sctrh'.includes(p.k) && p.k.length === 1).map(p => ({ k: p.k, n: String(p.n || ''), st: String(p.st || ''), m: n(p.m), off: n(p.off), lat: n(p.lat), lon: n(p.lon), food: String(p.food || '') }));
+  j.water = (Array.isArray(j.water) ? j.water : []).filter(w => w && (w.k === 'x' || w.k === 's')).map(w => ({ k: w.k, n: String(w.n || ''), c: String(w.c || ''), m: n(w.m), off: n(w.off), lat: n(w.lat), lon: n(w.lon) }));
   j.towns = (Array.isArray(j.towns) ? j.towns : []).map(t => ({ name: String(t.name || ''), m: n(t.m), state: String(t.state || ''), kind: t.kind === 'option' ? 'option' : 'town', zero: n(t.zero), note: String(t.note || '') }));
   j.resupply = (Array.isArray(j.resupply) ? j.resupply : []).map(r => { const o = { m: numOr(r.m) }; ['state', 'place', 'access', 'off', 'how', 'grocery', 'outfitter', 'mail', 'lodging', 'other', 'season', 'conf', 'src', 'mile_src'].forEach(k => { o[k] = String(r[k] == null ? '' : r[k]); }); return o; });
   j.calendar = (Array.isArray(j.calendar) ? j.calendar : []).filter(c => c && /^[\w-]{1,60}$/.test(c.id)).map(c => ({ id: c.id, label: String(c.label || ''), text: String(c.text || ''), key: !!c.key, trail: !!c.trail }));
@@ -301,6 +306,7 @@ function whereCard(d) {
     h += `<p class="big num">Mile ${num(g.mile)}</p><p class="muted small">${int(g.el)} ft on the trail profile · fix within ${int(g.acc * 3.28)} ft · ${esc(fmtT(new Date(g.t)))}</p>`;
     if (off) h += `<div class="box ${g.offFt > 26400 ? 'amber' : 'red'}"><b>You appear to be ${g.offFt > 5280 ? num(g.offFt / 5280, g.offFt > 52800 ? 0 : 1) + ' miles' : int(g.offFt) + ' ft'} from the trail.</b> The mile shown is the nearest point on it.${g.offFt > 26400 ? '' : ' Check the paper map.'}</div>`;
     if (d && d.mi > 0 && g.mile < d.b) h += `<p>To tonight's stop (${esc(d.to)}): <b class="num">${num(d.b - g.mile)} mi</b>, ${int(climb(g.mile, d.b))} ft of climb, about ${num(hrsAt(g.mile, d.b, P().meta.mph))} h at plan pace, ${num(hrsAt(g.mile, d.b, 2))} h at book pace.</p>`;
+    const nw = waterAhead(g.mile, 1, true)[0]; if (nw) h += `<p class="small">Next mapped year-round water: <b>${esc(nw.n || waterWord(nw))}</b> in ${num(nw.m - g.mile)} mi (mile ${num(nw.m)}). <a href="#/stops/water">Water ahead</a></p>`;
     h += '<ul class="list">' + sitesAhead(g.mile, 6).map(p => `<li><span class="item"><span class="d">${num(p.m - g.mile)} mi</span><span class="t">${esc(p.n)}<span class="sub">${KIND[p.k]}${p.off > 500 ? ' · ' + int(p.off) + ' ft off trail' : ''}${p.food ? ' · ' + esc(p.food) : ''}</span></span><span class="r">${num(p.m)}</span></span></li>`).join('') + '</ul>';
   } else if (!g || !g.err) h += '<p class="muted">Uses the phone\'s GPS. It works with no signal. It is an aid only: carry the paper map.</p>';
   return h + `<div class="btns"><button class="btn" data-act="gps">${g && g.wait ? 'Finding you…' : 'Find me on the trail'}</button>${g && g.lat != null ? `<a class="btn ghost" href="#/map/me">Show me on the map</a>` : `<a class="btn ghost" href="#/map">Map</a>`}</div></div>`;
@@ -364,12 +370,15 @@ V.plan = sub => {
 V.doc = i => { const d = P() && P().docs[+i]; return d ? `<div class="btns"><a class="btn ghost" href="#/plan/docs">‹ Papers</a></div><div class="md">${mdToHtml(d.md)}</div>` : '<p>Not found.</p>'; };
 V.stops = sub => {
   if (!P()) return needPlan(); sub = sub || 'towns'; const base = myMile() != null ? myMile() : mileOn(planArr(), today()), pa = planArr();
-  let h = `<h1>Stops and food</h1><div class="seg">${[['towns', 'Towns'], ['ahead', 'Sites ahead'], ['all', 'Every option']].map(([k, l]) => `<a href="#/stops/${k}" ${k === sub ? 'aria-current="page"' : ''}>${l}</a>`).join('')}</div><p class="small muted">From mile ${num(base)} (${myMile() != null ? 'your last log entry' : 'where the plan puts you today'}).</p>`;
+  let h = `<h1>Stops and food</h1><div class="seg">${[['towns', 'Towns'], ['ahead', 'Sites'], ['water', 'Water'], ['all', 'All options']].map(([k, l]) => `<a href="#/stops/${k}" ${k === sub ? 'aria-current="page"' : ''}>${l}</a>`).join('')}</div><p class="small muted">From mile ${num(base)} (${myMile() != null ? 'your last log entry' : 'where the plan puts you today'}).</p>`;
   if (sub === 'towns') {
     const ts = P().towns.filter(t => t.kind === 'town');
     h += '<ul class="list card">' + ts.map((t, i) => { const nx = ts[i + 1], gone = t.m <= base; return `<li><a class="item ${gone ? 'rest' : ''}" href="#/town/${i}"><span class="d">${gone ? 'passed' : num(t.m - base) + ' mi'}</span><span class="t">${esc(t.name)}${t.zero ? ' <span class="flag green">REST</span>' : ''}<span class="sub">plan ${esc(fmtD(dateAtMile(pa, t.m)))}${nx ? ' · next town in ' + num(nx.m - t.m) + ' mi' : ''}</span></span><span class="r">${num(t.m)}</span></a></li>`; }).join('') + '</ul><p class="small muted">Scheduled town nights. Stores passed between them are under "Every option".</p>';
   } else if (sub === 'ahead') {
     h += '<ul class="list card">' + sitesAhead(base, 60).map(p => `<li><span class="item"><span class="d">${num(p.m - base)} mi</span><span class="t">${esc(p.n)}<span class="sub">${KIND[p.k]}${p.st ? ' · ' + esc(p.st) : ''}${p.off > 500 ? ' · ' + int(p.off) + ' ft off trail' : ''}${p.food ? ' · ' + esc(p.food) : ''}</span></span><span class="r">${num(p.m)}</span></span></li>`).join('') + '</ul><p class="small muted">Official shelters, campsites and road crossings from the Park Service data (2026 edition of a 2015–17 survey). A shelter may have closed since: confirm against a current guide.</p>';
+  } else if (sub === 'water') {
+    const ws = waterAhead(base, 80);
+    h += `<div class="box amber">${esc(WATER_NOTE)}</div>` + (ws.length ? '<ul class="list card">' + ws.map(w => `<li><a class="item" href="#/map/at/${w.m.toFixed(2)}"><span class="d">${num(w.m - base)} mi</span><span class="t">${esc(w.n || (w.k === 's' ? 'Spring or seep' : 'Unnamed stream'))}<span class="sub">${esc(waterWord(w))}${w.off > 150 ? ' · ' + int(w.off) + ' ft off the trail' : ''}</span></span><span class="r">${num(w.m)}</span></a></li>`).join('') + '</ul>' : '<div class="card"><p class="muted">No water data on this device yet. Sync once with signal.</p></div>');
   } else {
     h += '<ul class="list card">' + P().resupply.map((r, i) => `<li><a class="item ${r.m != null && r.m <= base ? 'rest' : ''}" href="#/resupply/${i}"><span class="d">${r.m != null ? num(r.m) : '–'}</span><span class="t">${esc(r.place)}<span class="sub">${esc(r.state)} · ${esc(r.grocery.slice(0, 70))}</span></span><span class="r">${esc(r.conf.split(/[ (]/)[0])}</span></a></li>`).join('') + '</ul>';
   }
@@ -550,15 +559,20 @@ function mapPaint() {
   path(0, T.n - 1, step); g.strokeStyle = '#ffffff'; g.lineWidth = 6; g.stroke(); g.strokeStyle = '#c4121a'; g.lineWidth = 3; g.stroke();
   if (MAP.hi) { path(idxAt(MAP.hi.a), idxAt(MAP.hi.b), Math.max(1, step >> 1)); g.strokeStyle = '#1d4ed8'; g.lineWidth = 4; g.stroke(); }
   MAP.hit = []; g.font = '600 12px system-ui, sans-serif'; g.textBaseline = 'middle';
-  const boxes = [], label = (t, x, y) => { const w = g.measureText(t).width + 12, bx = [x + 6, y - 8, x + 6 + w, y + 8]; if (boxes.some(o => bx[0] < o[2] && bx[2] > o[0] && bx[1] < o[3] && bx[3] > o[1])) return; boxes.push(bx); g.lineWidth = 3; g.strokeStyle = 'rgba(255,255,255,.9)'; g.strokeText(t, x + 9, y); g.fillStyle = '#111'; g.fillText(t, x + 9, y); };
+  const boxes = [], label = (t, x, y, col) => { const w = g.measureText(t).width + 12, bx = [x + 6, y - 8, x + 6 + w, y + 8]; if (boxes.some(o => bx[0] < o[2] && bx[2] > o[0] && bx[1] < o[3] && bx[3] > o[1])) return; boxes.push(bx); g.lineWidth = 3; g.strokeStyle = 'rgba(255,255,255,.9)'; g.strokeText(t, x + 9, y); g.fillStyle = col || '#111'; g.fillText(t, x + 9, y); };
   const mark = (p, x, y) => { g.lineWidth = 1.5; g.strokeStyle = '#fff';
     if (p.k === 't') { g.fillStyle = '#111'; g.beginPath(); g.arc(x, y, 6, 0, 7); g.fill(); g.stroke(); }
     else if (p.k === 'r') { g.fillStyle = '#fff'; g.strokeStyle = '#111'; g.beginPath(); g.arc(x, y, 4, 0, 7); g.fill(); g.stroke(); }
     else if (p.k === 'c') { g.fillStyle = '#1b6b34'; g.fillRect(x - 5, y - 5, 10, 10); g.strokeRect(x - 5, y - 5, 10, 10); }
     else { g.fillStyle = p.k === 'h' ? '#8a4b08' : '#1b6b34'; g.beginPath(); g.moveTo(x, y - 7); g.lineTo(x + 6.5, y + 5); g.lineTo(x - 6.5, y + 5); g.closePath(); g.fill(); g.stroke(); } };
-  const show = (p, la, lo) => { const x = X(lo), y = Y(la); if (x < -20 || x > W + 20 || y < -20 || y > H + 20) return; mark(p, x, y); MAP.hit.push([x, y, p]); if (p.k === 't' ? z >= 9.5 : z >= 13.2) label(p.n, x, y); };
+  const labels = [], LZ = { t: 9.5, s: 12.2, h: 12.2, c: 12.2, r: 13.3 }, PRI = { t: 0, s: 1, h: 1, c: 2, r: 3 };
+  const show = (p, la, lo) => { const x = X(lo), y = Y(la); if (x < -20 || x > W + 20 || y < -20 || y > H + 20) return; mark(p, x, y); MAP.hit.push([x, y, p]); if (z >= LZ[p.k] && p.n) labels.push([PRI[p.k], shortName(p.n), x, y, '#111']); };
+  if (z >= 13.3) (P().water || []).forEach(w => { const x = X(w.lon), y = Y(w.lat); if (x < -12 || x > W + 12 || y < -12 || y > H + 12) return; const solid = w.k === 's' || w.c === 'perennial' || w.c === 'river or pond';
+    g.lineWidth = 2; g.strokeStyle = '#0b5cad'; g.fillStyle = solid ? '#1e88e5' : '#ffffff'; g.beginPath(); if (w.k === 's') { g.moveTo(x, y - 6); g.lineTo(x + 5, y); g.lineTo(x, y + 6); g.lineTo(x - 5, y); g.closePath(); } else g.arc(x, y, 4, 0, 7); g.fill(); g.stroke();
+    MAP.hit.push([x, y, { k: 'w', n: w.n || (w.k === 's' ? 'Spring or seep' : 'Unnamed stream'), m: w.m, off: w.off, note: waterWord(w) + '. Mapped, not seen: may be dry; treat all water' }]); if (z >= 14 && w.n) labels.push([4, w.n, x, y, '#0b4a8f']); });
   if (z >= 11.3) P().points.forEach(p => { if (p.k === 'r' && z < 12.6) return; show(p, p.lat, p.lon); });
   P().towns.forEach(t => { const i = idxAt(t.m); show({ k: 't', n: t.name, m: t.m, note: t.note }, T.lat[i], T.lon[i]); });
+  labels.sort((a, b) => a[0] - b[0]).forEach(l => label(l[1], l[2], l[3], l[4]));
   if (S.gps && S.gps.lat != null) { const x = X(S.gps.lon), y = Y(S.gps.lat), r = Math.max(8, (S.gps.acc || 0) / (156543.03 * Math.cos(MAP.lat * Math.PI / 180) / 2 ** z)); g.fillStyle = 'rgba(29,78,216,.18)'; g.beginPath(); g.arc(x, y, Math.min(r, 400), 0, 7); g.fill(); g.fillStyle = '#1d4ed8'; g.strokeStyle = '#fff'; g.lineWidth = 3; g.beginPath(); g.arc(x, y, 7, 0, 7); g.fill(); g.stroke(); }
   const mpp = 156543.03 * Math.cos(MAP.lat * Math.PI / 180) / 2 ** z / 1609.344, nice = [0.1, 0.25, 0.5, 1, 2, 5, 10, 25, 50, 100].find(v => v / mpp >= 70) || 200, bw = nice / mpp;
   g.fillStyle = 'rgba(255,255,255,.85)'; g.fillRect(8, H - 26, bw + 12, 20); g.strokeStyle = '#111'; g.lineWidth = 2; g.beginPath(); g.moveTo(14, H - 16); g.lineTo(14, H - 10); g.lineTo(14 + bw, H - 10); g.lineTo(14 + bw, H - 16); g.stroke(); g.fillStyle = '#111'; g.font = '600 11px system-ui, sans-serif'; g.fillText(nice + ' mi', 20, H - 18);
@@ -573,7 +587,7 @@ function mapAttach() {
     mapDraw(); });
   const up = e => { const had = ptrs.has(e.pointerId); ptrs.delete(e.pointerId); if (ptrs.size < 2) pinch = 0; if (!had || e.type !== 'pointerup' || moved > 10 || ptrs.size) return;
     const r = cv.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top; let best = null, bd = 26 * 26; (MAP.hit || []).forEach(h => { const d = (h[0] - x) ** 2 + (h[1] - y) ** 2; if (d < bd) { bd = d; best = h[2]; } });
-    if (best) mapInfo(`${best.n} · ${best.k === 't' ? 'Town stop: this is where you leave the trail' : KIND[best.k]} · mile ${num(best.m)}${best.off > 500 ? ' · ' + int(best.off) + ' ft off the trail' : ''}${best.food ? ' · food storage: ' + best.food : ''}${best.note ? ' · ' + best.note : ''}`); };
+    if (best) mapInfo(`${best.n} · ${best.k === 't' ? 'Town stop: this is where you leave the trail' : best.k === 'w' ? 'Water' : KIND[best.k]} · mile ${num(best.m)}${best.off > 500 ? ' · ' + int(best.off) + ' ft off the trail' : ''}${best.food ? ' · food storage: ' + best.food : ''}${best.note ? ' · ' + best.note : ''}`); };
   cv.addEventListener('pointerup', up); cv.addEventListener('pointercancel', up);
   cv.addEventListener('wheel', e => { e.preventDefault(); MAP.z = Math.max(8, Math.min(16.5, MAP.z - e.deltaY / 400)); mapDraw(); }, { passive: false });
   mapDraw();
@@ -588,8 +602,8 @@ V.map = (kind, arg) => {
   const have = Object.keys(S.meta.maps).length;
   return `<h1>${esc(title)}</h1><div class="mapwrap"><canvas id="map" class="map" role="img" aria-label="Map of the trail"></canvas><div class="mapbtns"><button class="btn" data-act="zin" aria-label="Zoom in">+</button><button class="btn" data-act="zout" aria-label="Zoom out">−</button></div></div>
   <div class="btns"><button class="btn" data-act="mapme">${S.gps && S.gps.wait ? 'Finding you…' : 'Find me'}</button><a class="btn ghost" href="#/maps">Offline maps</a></div>
-  <div class="card small" id="mapinfo">Drag to move, pinch to zoom, tap a marker for its name. Green triangle: shelter. Green square: campsite. White ring: road crossing. Black dot: the point on the trail where you leave it for a town stop (the town itself may be miles off). Blue dot: you.</div>
-  <p class="small muted">${have ? '' : 'No topographic maps are stored yet: with no signal you will see the trail and markers on a plain ground. '}${esc(L('mapCredit'))} An aid, not a navigation instrument: carry the paper map.</p>`;
+  <div class="card small" id="mapinfo">Drag to move, pinch to zoom, tap a marker for its name. Green triangle: shelter. Green square: campsite. White ring: road crossing. Black dot: the point on the trail where you leave it for a town stop (the town itself may be miles off). Small blue circle: a stream the trail crosses (filled if mapped as year-round, hollow if seasonal). Blue diamond: spring. Large blue dot: you. Names appear as you zoom in.</div>
+  <p class="small muted">${have ? '' : 'No topographic maps are stored yet: with no signal you will see the trail and markers on a plain ground. '}${esc(L('mapCredit'))} Water: US Geological Survey National Hydrography Dataset; mapped, not seen on the ground. An aid, not a navigation instrument: carry the paper map.</p>`;
 };
 V.maps = () => {
   if (!P() || !S.track) return needPlan(); const secs = sections();
