@@ -2,7 +2,7 @@
    This file is code only. It holds no plan, no dates, no names and no log: those are fetched once from a
    private repository with a key the owner pastes in, and are then kept on the device for offline use. */
 'use strict';
-const VERSION = '0.3.1';
+const VERSION = '0.4.0';
 let TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';      // replaced by the plan's own time zone once a plan is loaded
 const DEF = { start: 'the start', end: 'the finish', endName: 'The finish', tzName: 'local time', quiet: 'remote country', who: 'a hiker on the trail', floorNote: '', coldName: '', coldMile: null, coldAfter: '', coldWarn: '', dirNote: 'from the start', mapCredit: 'Topographic base: USGS The National Map.' };
 const L = k => (S.plan && S.plan.meta && S.plan.meta.labels && S.plan.meta.labels[k] != null) ? S.plan.meta.labels[k] : DEF[k];
@@ -41,7 +41,7 @@ const db = (() => {
 const S = {
   settings: { mode: 'hiker', repo: '', token: '', preview: '', card: { name: '', contact: '', medical: '' } },
   plan: null, track: null, logs: {}, st: { todo: {}, gear: {}, oz: {}, floor: '', updated: 0 },
-  meta: { shas: {}, dirty: [], stDirty: false, lastSync: 0, lastErr: '', maps: {} }, gps: null, busy: false
+  meta: { shas: {}, dirty: [], stDirty: false, lastSync: 0, lastErr: '', maps: {}, plans: {} }, gps: null, busy: false
 };
 function loadSettings() { try { const s = JSON.parse(localStorage.getItem('tb.settings') || '{}'); Object.assign(S.settings, s, { card: Object.assign({}, S.settings.card, s.card || {}) }); } catch (e) { /* first run */ } if (!REPO_RE.test(S.settings.repo)) S.settings.repo = ''; }
 function saveSettings() { try { localStorage.setItem('tb.settings', JSON.stringify(S.settings)); } catch (e) { toast('This browser is not keeping settings.'); } }
@@ -49,6 +49,8 @@ const saveLogs = () => db.set('logs', S.logs);
 const saveSt = () => db.set('st', S.st);
 const saveMeta = () => db.set('meta', S.meta);
 const isHome = () => S.settings.mode === 'home';
+const isPlanFile = n => /^plan(-[a-z0-9]{1,24})?\.json$/.test(n);
+const activePlan = () => isPlanFile(S.settings.planFile || '') ? S.settings.planFile : 'plan.json';
 const brk = () => { const v = parseFloat(S.settings.breaks); return v >= 0 && v <= 6 ? v : 2; };
 const roNote = () => isHome() ? `<div class="box amber"><b>This device is set as the home contact's, so it can look but not change anything.</b> If this is the walker's own phone, change "This device is" in <a href="#/settings">Settings</a>.</div>` : '';
 function keyInfo(t) { if (!t) return 'No key in the box yet.'; const kind = t.startsWith('github_pat_') ? 'a fine-grained key' : /^gh[pousr]_/.test(t) ? 'a classic key (it will work, but a fine-grained one limited to the one repository is safer)' : 'NOT a GitHub key: those begin github_pat_'; return `In the box: ${t.length} characters, ${kind}${/\s/.test(t) ? ', with a space or line break inside it (paste it again)' : ''}.`; }
@@ -94,6 +96,11 @@ const total = () => P().meta.miles;
 const planArr = () => P().days.map(d => [d.date, d.b]);
 function mileOn(arr, date) { if (date < arr[0][0]) return 0; let m = arr[0][1]; for (const [d, c] of arr) { if (d <= date) m = c; else break; } return m; }
 function dateAtMile(arr, m) { for (const [d, c] of arr) if (c >= m - 0.05) return d; return arr[arr.length - 1][0]; }
+const legs = () => (P().meta.legs && P().meta.legs.length) ? P().meta.legs : [{ n: 1, name: '', start: P().meta.start, end: P().days[P().days.length - 1].date, frm: L('start'), to: L('endName') }];
+const multi = () => legs().length > 1;
+const legOf = d => legs().find(l => l.n === d.leg) || legs()[0];
+const dlabel = d => multi() ? `${legOf(d).name}, day ${d.ld || d.day}` : `Day ${d.day}`;
+const legMiles = l => { const ds = P().days.filter(d => !multi() || d.leg === l.n); return ds.length ? [ds[0].a, ds[ds.length - 1].b] : [0, total()]; };
 const dayByDate = date => P().days.find(d => d.date === date);
 const dayByMile = m => P().days.find(d => d.mi > 0 && m >= d.a - 0.05 && m < d.b) || P().days[P().days.length - 1];
 function entries() { return Object.values(S.logs).filter(e => e && DATE_RE.test(e.date) && !e.deleted).sort((a, b) => a.date < b.date ? -1 : 1); }
@@ -124,9 +131,11 @@ async function ghPut(path, obj, sha, message) { const body = { message, content:
 
 function cleanPlan(j) {
   if (!j || !Array.isArray(j.days) || !j.meta) return null; const n = v => +v || 0;
-  j.meta.miles = n(j.meta.miles); j.meta.mph = n(j.meta.mph) || 2; ['built', 'start', 'finish', 'control_finish', 'status', 'tz'].forEach(k => { j.meta[k] = str(String(j.meta[k] == null ? '' : j.meta[k]), 60); });
+  j.meta.miles = n(j.meta.miles); j.meta.mph = n(j.meta.mph) || 2; ['built', 'start', 'finish', 'control_finish', 'status', 'tz', 'title'].forEach(k => { j.meta[k] = str(String(j.meta[k] == null ? '' : j.meta[k]), 80); });
+  j.meta.noControl = !!j.meta.noControl; j.meta.ceiling = n(j.meta.ceiling); j.meta.effortFt = n(j.meta.effortFt) || 387;
+  j.meta.legs = (Array.isArray(j.meta.legs) ? j.meta.legs : []).filter(l => l && DATE_RE.test(l.start) && DATE_RE.test(l.end)).map(l => ({ n: n(l.n), name: String(l.name || ''), start: l.start, end: l.end, frm: String(l.frm || ''), to: String(l.to || ''), days: n(l.days) }));
   if (!DATE_RE.test(j.meta.start) || !(j.meta.miles > 0)) return null;
-  j.days = j.days.filter(d => d && DATE_RE.test(d.date)); j.days.forEach(d => { ['day', 'mi', 'walk', 'a', 'b', 'up', 'down', 'hrs', 'book', 'high', 'light', 'off', 'lat', 'lon'].forEach(k => { d[k] = n(d[k]); }); d.roads = Array.isArray(d.roads) ? d.roads.map(String) : []; d.notes = Array.isArray(d.notes) ? d.notes.filter(x => x && typeof x.text === 'string').map(x => ({ flag: str(String(x.flag || ''), 12), text: x.text })) : []; ['frm', 'to', 'state', 'kind', 'note', 'food'].forEach(k => { d[k] = String(d[k] == null ? '' : d[k]); }); });
+  j.days = j.days.filter(d => d && DATE_RE.test(d.date)); j.days.forEach(d => { ['day', 'leg', 'ld', 'eff', 'mi', 'walk', 'a', 'b', 'up', 'down', 'hrs', 'book', 'high', 'light', 'off', 'lat', 'lon'].forEach(k => { d[k] = n(d[k]); }); d.roads = Array.isArray(d.roads) ? d.roads.map(String) : []; d.notes = Array.isArray(d.notes) ? d.notes.filter(x => x && typeof x.text === 'string').map(x => ({ flag: str(String(x.flag || ''), 12), text: x.text })) : []; ['frm', 'to', 'state', 'kind', 'note', 'food'].forEach(k => { d[k] = String(d[k] == null ? '' : d[k]); }); });
   if (!j.days.length) return null;
   j.control = (Array.isArray(j.control) ? j.control : []).filter(c => Array.isArray(c) && DATE_RE.test(c[0])).map(c => [c[0], n(c[1])]); if (!j.control.length) j.control = j.days.map(d => [d.date, d.b]);
   j.points = (Array.isArray(j.points) ? j.points : []).filter(p => p && 'sctrh'.includes(p.k) && p.k.length === 1).map(p => ({ k: p.k, n: String(p.n || ''), st: String(p.st || ''), m: n(p.m), off: n(p.off), lat: n(p.lat), lon: n(p.lon), food: String(p.food || '') }));
@@ -139,7 +148,7 @@ function cleanPlan(j) {
   j.content = (j.content && typeof j.content === 'object') ? j.content : {};
   return j;
 }
-function usePlan(j) { S.plan = j; if (j.meta.tz) { try { new Intl.DateTimeFormat('en-US', { timeZone: j.meta.tz }); TZ = j.meta.tz; } catch (e) { /* keep device zone */ } } }
+function usePlan(j) { S.plan = j; if (typeof MAP !== 'undefined') MAP.sets = {}; if (j.meta.tz) { try { new Intl.DateTimeFormat('en-US', { timeZone: j.meta.tz }); TZ = j.meta.tz; } catch (e) { /* keep device zone */ } } }
 /* everything that arrives from outside is reduced to the fields and types the app expects */
 const str = (v, n) => typeof v === 'string' ? v.slice(0, n || 400) : '';
 const numOr = v => (typeof v === 'number' && isFinite(v)) ? v : (typeof v === 'string' && v.trim() !== '' && isFinite(+v) ? +v : null);
@@ -161,15 +170,15 @@ async function sync(manual) {
     const files = await ghList('plan'); let got = false;
     if (!files.some(f => f.name === 'plan.json')) throw new Error(`No plan found in ${S.settings.repo}. Check the repository name, and that the key's Repository access lists it.`);
     for (const f of files) {
-      if (!['plan.json', 'track.json'].includes(f.name) || S.meta.shas[f.name] === f.sha) continue;
-      let j = await ghRaw('plan/' + f.name); const key = f.name.replace('.json', '');
-      if (key === 'plan') { j = cleanPlan(j); if (!j) throw new Error('plan file not understood'); }
-      if (key === 'track' && !(j && j.n > 1 && ['mi', 'lat', 'lon', 'el'].every(k => Array.isArray(j[k]) && j[k].length === j.n))) throw new Error('track file not understood');
-      if (S.plan && S[key === 'plan' ? 'plan' : 'track']) {      // a plan is already in use: hold the new one until the owner accepts it
-        S.pending = S.pending || { shas: {} }; S.pending[key] = j; S.pending.shas[f.name] = f.sha; S.pending.built = key === 'plan' ? j.meta.built : (S.pending.built || ''); await db.set('pending', S.pending); continue;
+      const isP = isPlanFile(f.name); if ((!isP && f.name !== 'track.json') || S.meta.shas[f.name] === f.sha) continue;
+      let j = await ghRaw('plan/' + f.name);
+      if (isP) { j = cleanPlan(j); if (!j) throw new Error('plan file not understood'); S.meta.plans[f.name] = j.meta.title || f.name; }
+      else if (!(j && j.n > 1 && ['mi', 'lat', 'lon', 'el'].every(k => Array.isArray(j[k]) && j[k].length === j.n))) throw new Error('track file not understood');
+      if (isP ? (f.name === activePlan() && S.plan) : (S.track && S.plan)) {      // in use: hold the new one until the owner accepts it
+        S.pending = S.pending || { shas: {} }; S.pending[isP ? 'plan' : 'track'] = j; S.pending.shas[f.name] = f.sha; if (isP) { S.pending.built = j.meta.built; S.pending.file = f.name; S.pending.title = j.meta.title; } await db.set('pending', S.pending); continue;
       }
-      await db.set(key, j); S.meta.shas[f.name] = f.sha; got = true;
-      if (key === 'plan') usePlan(j); else S.track = decodeTrack(j);
+      await db.set(isP ? 'plan:' + f.name : 'track', j); S.meta.shas[f.name] = f.sha; got = true;
+      if (isP) { if (f.name === activePlan()) usePlan(j); } else S.track = decodeTrack(j);
     }
     const logFiles = await ghList('log'); const bySha = {}; logFiles.forEach(f => { bySha[f.name] = f.sha; });
     const months = new Set(S.meta.dirty);
@@ -222,9 +231,9 @@ function noteHtml(n) { const c = FLAG[n.flag] || ''; return `<div class="note ${
 function dayCard(d, opts) {
   opts = opts || {}; const s = sunTimes(d.date, d.lat, d.lon), rest = d.kind === 'rest day';
   const place = esc(d.to) + (d.off > 500 ? ` <span class="muted small">(${int(d.off)} ft off trail)</span>` : '');
-  let h = `<div class="card"><p class="kicker">Day ${d.day} · ${esc(fmtD(d.date))}${opts.tag ? ' · ' + esc(opts.tag) : ''}</p><p class="big">${rest ? 'Rest day in ' + esc(d.to) : place}</p>`;
+  let h = `<div class="card"><p class="kicker">${esc(dlabel(d))} · ${esc(fmtD(d.date, multi() ? { year: 'numeric' } : null))}${opts.tag ? ' · ' + esc(opts.tag) : ''}</p><p class="big">${rest ? 'Rest day in ' + esc(d.to) : place}</p>`;
   if (!rest) h += `<p class="muted small">from ${esc(d.frm)}${d.state ? ' · ' + esc(d.state) : ''}${d.food ? ' · food storage: ' + esc(d.food) : ''}</p>
-    <div class="stats">${stat(num(d.mi), 'miles')}${stat(int(d.up), 'ft climb')}${stat(num(d.hrs), `hrs at ${P().meta.mph} mph`)}${stat(num(d.book), 'hrs book pace')}${stat(num(d.light), 'hrs daylight')}${stat(num(d.b), 'mile tonight')}</div>`;
+    <div class="stats">${stat(num(d.mi), 'miles')}${stat(int(d.up), 'ft climb')}${stat(num(d.hrs), `hrs at ${P().meta.mph} mph`)}${P().meta.ceiling ? stat(num(d.eff), `effort, ceiling ${num(P().meta.ceiling)}`) : stat(num(d.book), 'hrs book pace')}${stat(num(d.light), 'hrs daylight')}${stat(num(d.b), 'mile tonight')}</div>`;
   if (s.rise) h += `<p class="small muted">Sunrise ${esc(fmtT(s.rise))} · sunset ${esc(fmtT(s.set))} (${esc(L('tzName'))})${d.day === 1 ? ' · ' + num(d.walk) + ' miles walked today' : ''}</p>`;
   if (!rest && s.rise) { const br = brk(), need = x => new Date(s.set.getTime() - (x + br + 0.5) * 36e5), a = need(d.hrs), b = need(d.book), tight = a < s.rise, slow = b < s.rise;
     h += `<div class="box ${tight ? 'red' : slow ? 'amber' : 'green'}"><b>${tight ? 'This day does not fit the daylight, even at your pace.' : slow ? 'Fits at your pace; not at book pace.' : 'Fits the daylight at either pace.'}</b> With ${num(br)} h of breaks and camp made half an hour before sunset, set off by <b>${esc(fmtT(a))}</b> at ${P().meta.mph} mph${slow ? `. At book pace you would have to leave at ${esc(fmtT(b))}, before sunrise: shorten the day, or expect to finish by headlamp` : `, or by ${esc(fmtT(b))} at book pace`}.</div>`; }
@@ -269,7 +278,9 @@ function pace() {
   const from = addDays(last.date, -14), first = es.find(e => e.date >= from && typeof e.b === 'number');
   if (first && first.date < last.date) { const m0 = typeof first.a === 'number' ? first.a : first.b, span = dayDiff(last.date, first.date) + (typeof first.a === 'number' ? 1 : 0); r.rate = span >= 3 ? (last.b - m0) / span : null; r.span = span; }
   const proj = m => (r.rate > 0 && r.span >= 7 && last.b < m) ? addDays(last.date, Math.ceil((m - last.b) / r.rate)) : null;
-  r.cold = L('coldMile') ? proj(L('coldMile')) : null; r.finish = proj(total());
+  const lgNow = legs().find(l => { const [a0, b0] = legMiles(l); return last.b >= a0 - 0.05 && last.b < b0 - 0.05; }) || legs()[legs().length - 1], [la, lb] = legMiles(lgNow);
+  r.legTo = multi() ? lgNow.to : L('end'); r.finish = proj(lb); r.cold = (L('coldMile') && L('coldMile') > la && L('coldMile') <= lb) ? proj(L('coldMile')) : null;
+  if (P().meta.ceiling) { const ef = walk.slice(-10).map(e => (e.b - e.a) + climb(e.a, e.b) / P().meta.effortFt); r.eff = ef.length ? ef.reduce((x, y) => x + y, 0) / ef.length : null; r.effMax = ef.length ? Math.max.apply(null, ef) : null; }
   return r;
 }
 const aheadTxt = n => n === 0 ? 'level with' : `${Math.abs(n)} day${Math.abs(n) === 1 ? '' : 's'} ${n > 0 ? 'ahead of' : 'behind'}`;
@@ -278,17 +289,18 @@ function paceChart() {
   const x = d => 6 + dayDiff(d, d0) / span * (W - 12), y = m => H - 16 - m / total() * (H - 26);
   const path = arr => arr.map((p, i) => (i ? 'L' : 'M') + x(p[0]).toFixed(1) + ' ' + y(p[1]).toFixed(1)).join(' ');
   const mine = entries().filter(e => typeof e.b === 'number').map(e => [e.date, e.b]);
-  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Miles against date: the plan, the book-pace control and your log"><line class="axis" x1="6" y1="${H - 16}" x2="${W - 6}" y2="${H - 16}"/><path class="p-control" d="${path(ca)}"/><path class="p-plan" d="${path(pa)}"/>${mine.length > 1 ? `<path class="p-you" d="${path(mine)}"/>` : mine.length ? `<circle class="me" cx="${x(mine[0][0]).toFixed(1)}" cy="${y(mine[0][1]).toFixed(1)}" r="4"/>` : ''}<text x="6" y="${H - 4}">${esc(fmtD(d0, { weekday: undefined }))}</text><text x="${W - 6}" y="${H - 4}" text-anchor="end">${esc(fmtD(d1, { weekday: undefined }))}</text><text x="6" y="10">${esc(L('endName'))}, ${int(total())} mi</text></svg>
-  <div class="legend"><span><i></i>Plan</span><span><i class="c"></i>Book-pace control</span><span><i class="y"></i>Your log</span></div>`;
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Miles against date: the plan and your log"><line class="axis" x1="6" y1="${H - 16}" x2="${W - 6}" y2="${H - 16}"/>${P().meta.noControl ? '' : `<path class="p-control" d="${path(ca)}"/>`}<path class="p-plan" d="${path(pa)}"/>${mine.length > 1 ? `<path class="p-you" d="${path(mine)}"/>` : mine.length ? `<circle class="me" cx="${x(mine[0][0]).toFixed(1)}" cy="${y(mine[0][1]).toFixed(1)}" r="4"/>` : ''}<text x="6" y="${H - 4}">${esc(fmtD(d0, { weekday: undefined }))}</text><text x="${W - 6}" y="${H - 4}" text-anchor="end">${esc(fmtD(d1, { weekday: undefined }))}</text><text x="6" y="10">${esc(L('endName'))}, ${int(total())} mi</text></svg>
+  <div class="legend"><span><i></i>Plan</span>${P().meta.noControl ? '' : '<span><i class="c"></i>Book-pace control</span>'}<span><i class="y"></i>Your log</span></div>`;
 }
 function paceCard(full) {
-  const r = pace(); if (!r) return `<div class="card"><h2>Pace</h2><p class="muted">No log entries yet. Once you log a day's miles and walking hours, this compares you with the plan and with the book-pace control.</p>${full ? paceChart() : ''}</div>`;
+  const r = pace(); if (!r) return `<div class="card"><h2>Pace</h2><p class="muted">No log entries yet. Once you log a day's miles and walking hours, this compares you with the plan.</p>${full ? paceChart() : ''}</div>`;
   const dp = P().decision.points.map(p => { const reached = entries().find(e => typeof e.b === 'number' && e.b >= p.m - 0.05); const late = reached ? reached.date > p.control : (r.last.date > p.control && r.mile < p.m); return late ? `<div class="box red"><b>Decision point: ${esc(p.name)}.</b> ${esc(p.text)}</div>` : ''; }).join('');
-  let h = `<div class="card"><h2>Pace</h2><p>At mile <b class="num">${num(r.mile)}</b> on ${esc(fmtD(r.last.date))} you are <b>${esc(aheadTxt(r.vsPlan))}</b> the plan and <b>${esc(aheadTxt(r.vsControl))}</b> the book-pace control.</p>
-  <div class="stats">${stat(r.avg ? num(r.avg) : '–', 'mi per walking day')}${stat(r.rate ? num(r.rate) : '–', 'mi per day, last 2 wks')}${stat(r.mph ? num(r.mph) : '–', 'mph on the flat')}</div>`;
+  let h = `<div class="card"><h2>Pace</h2><p>At mile <b class="num">${num(r.mile)}</b> on ${esc(fmtD(r.last.date))} you are <b>${esc(aheadTxt(r.vsPlan))}</b> the plan${P().meta.noControl ? '' : ` and <b>${esc(aheadTxt(r.vsControl))}</b> the book-pace control`}.</p>
+  <div class="stats">${stat(r.avg ? num(r.avg) : '–', 'mi per walking day')}${stat(r.rate ? num(r.rate) : '–', 'mi per day, last 2 wks')}${stat(r.mph ? num(r.mph) : '–', 'mph on the flat')}${P().meta.ceiling ? stat(r.eff ? num(r.eff) : '–', `effort a day, last ${Math.min(10, r.walkDays)} (ceiling ${num(P().meta.ceiling)})`) : ''}</div>`;
+  if (P().meta.ceiling && r.effMax > P().meta.ceiling + 1.5) h += `<div class="box amber">Your hardest recent day came to ${num(r.effMax)} effort miles, above your ceiling of ${num(P().meta.ceiling)}. Effort = miles + climb ÷ ${int(P().meta.effortFt)}.</div>`;
   if (r.mph) h += `<p class="small muted">Flat speed is worked back from your last ${r.mphN} timed day${r.mphN === 1 ? '' : 's'}: miles ÷ (walking hours − 30 min per 1,000 ft climbed). The plan assumes ${P().meta.mph}; book pace is 2.</p>`;
   if (r.rate && r.span < 7) h += `<p class="small muted">Projected dates appear once a week of entries is in.</p>`;
-  if (r.cold || r.finish) h += `<p>At your last two weeks' rate: ${r.cold ? `${esc(L('coldName'))} about <b>${esc(fmtD(r.cold))}</b>; ` : ''}${r.finish ? `${esc(L('end'))} about <b>${esc(fmtD(r.finish))}</b>.` : ''}</p>`;
+  if (r.cold || r.finish) h += `<p>At your last two weeks' rate: ${r.cold ? `${esc(L('coldName'))} about <b>${esc(fmtD(r.cold))}</b>; ` : ''}${r.finish ? `${esc(r.legTo)} about <b>${esc(fmtD(r.finish))}</b>.` : ''}</p>`;
   if (r.cold && L('coldAfter') && r.cold > L('coldAfter')) h += `<div class="box amber">${esc(L('coldWarn'))}</div>`;
   return h + dp + (full ? paceChart() : '<a class="btn ghost block" href="#/log/pace">Pace in full</a>') + '</div>';
 }
@@ -316,17 +328,17 @@ function whereCard(d) {
 V.today = () => {
   if (!P()) return needPlan();
   if (isHome()) return V.home();
-  const t = today(), start = P().meta.start, last = P().days[P().days.length - 1].date, mm = myMile(); let h = '';
-  if (S.pending) h += `<div class="box amber"><b>A changed plan has arrived</b>${S.pending.built ? ' (built ' + esc(S.pending.built) + '; yours was built ' + esc(P().meta.built) + ')' : ''}. If you were not expecting one, keep yours and ask home.<div class="btns"><button class="btn" data-act="acceptplan">Use the new plan</button><button class="btn ghost" data-act="keepplan">Keep mine</button></div></div>`;
+  const t = today(), lg = legs(), cur = lg.find(l => t >= l.start && t <= l.end), nextLeg = lg.find(l => t < l.start), last = P().days[P().days.length - 1].date, mm = myMile(); let h = '';
+  if (S.pending) h += `<div class="box amber"><b>A changed plan has arrived</b>${S.pending.title ? ': ' + esc(S.pending.title) : ''}${S.pending.built ? ' (built ' + esc(S.pending.built) + '; yours was built ' + esc(P().meta.built) + ')' : ''}. If you were not expecting one, keep yours and ask home.<div class="btns"><button class="btn" data-act="acceptplan">Use the new plan</button><button class="btn ghost" data-act="keepplan">Keep mine</button></div></div>`;
   if (S.settings.preview) h += `<div class="box amber">Preview: showing the app as on ${esc(fmtDL(t))}. <button class="btn ghost" data-act="nopreview">Back to today</button></div>`;
-  if (t < start) {
-    const n = dayDiff(start, t), todo = P().calendar.filter(c => !S.st.todo[c.id]).slice(0, 3);
-    h += `<h1>${n} days to ${esc(L('start'))}</h1><p class="muted">${esc(fmtDL(t))} · the plan is a ${esc(P().meta.status)}</p>
-    <div class="card"><h2>Next to do</h2>${todo.map(todoRow).join('') || '<p class="muted">Everything is ticked.</p>'}<a class="btn ghost block" href="#/plan/todo">All dates and bookings</a></div>` + whereCard(null) + dayCard(P().days[0], { tag: 'the first day' }) + `<div class="btns"><a class="btn ghost block" href="#/log/edit/${esc(t)}">Log a practice day</a></div>`;
+  if (!cur && nextLeg) {
+    const n = dayDiff(nextLeg.start, t), todo = P().calendar.filter(c => !S.st.todo[c.id]).slice(0, 3), first = P().days.find(d => d.date === nextLeg.start) || P().days[0];
+    h += `<h1>${n} days to ${esc(nextLeg.frm || L('start'))}</h1><p class="muted">${esc(fmtDL(t))}${multi() ? ' · ' + esc(nextLeg.name) + ' begins ' + esc(fmtDL(nextLeg.start)) : ''} · the plan is a ${esc(P().meta.status)}</p>
+    <div class="card"><h2>Next to do</h2>${todo.map(todoRow).join('') || '<p class="muted">Everything is ticked.</p>'}<a class="btn ghost block" href="#/plan/todo">All dates and bookings</a></div>` + whereCard(null) + dayCard(first, { tag: 'the first day' }) + `<div class="btns"><a class="btn ghost block" href="#/log/edit/${esc(t)}">Log a practice day</a></div>`;
   } else {
     const d = dayByDate(t) || P().days[P().days.length - 1];
     h += `<h1>${t > last ? 'After the plan\'s last day' : 'Today'}</h1><p class="muted">${esc(fmtDL(t))}</p>`;
-    if (mm != null && Math.abs(mm - mileOn(planArr(), t)) > 12) { const dm = dayByMile(mm); h += `<div class="box amber">Your log puts you at mile ${num(mm)}, which is plan day ${dm.day}. Today's date is plan day ${d.day}. <a href="#/day/${dm.day}">Show day ${dm.day}</a></div>`; }
+    if (mm != null && Math.abs(mm - mileOn(planArr(), t)) > 12) { const dm = dayByMile(mm); h += `<div class="box amber">Your log puts you at mile ${num(mm)}, which is ${esc(dlabel(dm))} of the plan. Today's date is ${esc(dlabel(d))}. <a href="#/day/${dm.day}">Show that day</a></div>`; }
     h += dayCard(d, { me: S.gps && S.gps.mile }) + whereCard(d);
     const base = mm != null ? mm : d.a, nt = nextTown(base);
     if (nt) { const lastE = myLast(), r = pace(), rate = r && r.rate ? r.rate : 16, days = (nt.m - base) / rate;
@@ -346,23 +358,25 @@ V.home = () => {
   if (r) h += paceCard(false);
   return h;
 };
-V.day = n => { if (!P()) return needPlan(); const d = P().days.find(x => x.day === +n); if (!d) return '<p>No such day.</p>'; return `<div class="btns">${d.day > 1 ? `<a class="btn ghost" href="#/day/${d.day - 1}">‹ Day ${d.day - 1}</a>` : ''}<a class="btn ghost" href="#/plan">Schedule</a>${d.day < P().days.length ? `<a class="btn ghost" href="#/day/${d.day + 1}">Day ${d.day + 1} ›</a>` : ''}</div>` + dayCard(d) + (isHome() ? '' : `<a class="btn block" href="#/log/edit/${d.date}">Log this day</a>`); };
+V.day = n => { if (!P()) return needPlan(); const d = P().days.find(x => x.day === +n); if (!d) return '<p>No such day.</p>'; return `<div class="btns">${d.day > 1 ? `<a class="btn ghost" href="#/day/${d.day - 1}">‹ Previous</a>` : ''}<a class="btn ghost" href="#/plan">Schedule</a>${d.day < P().days.length ? `<a class="btn ghost" href="#/day/${d.day + 1}">Next ›</a>` : ''}</div>` + dayCard(d) + (isHome() ? '' : `<a class="btn block" href="#/log/edit/${d.date}">Log this day</a>`); };
 const planSeg = cur => `<div class="seg">${[['schedule', 'Schedule'], ['check', 'Checkpoints'], ['todo', 'To do'], ['docs', 'Papers']].map(([k, l]) => `<a href="#/plan/${k}" ${k === cur ? 'aria-current="page"' : ''}>${l}</a>`).join('')}</div>`;
 function todoRow(c) { const done = !!S.st.todo[c.id]; return `<label class="check ${done ? 'done' : ''} ${c.key ? 'key' : ''}"><input type="checkbox" data-todo="${esc(c.id)}" ${done ? 'checked' : ''} ${isHome() ? 'disabled' : ''}><span class="t"><b>${esc(c.label)}</b><br>${esc(c.text)}</span></label>`; }
 V.plan = sub => {
   if (!P()) return needPlan(); sub = sub || 'schedule'; let h = '<h1>The plan</h1>' + planSeg(sub);
   if (sub === 'schedule') {
     const t = today(); let month = '';
-    h += `<p class="muted small">${P().days.length} days · ${int(total())} miles · day 1 ${esc(fmtD(P().meta.start))} · ${esc(L('end'))} ${esc(fmtD(P().meta.finish))} (book-pace control ${esc(fmtD(P().meta.control_finish))}). A ${esc(P().meta.status)}.</p>`;
-    P().days.forEach(d => { const m = fmtD(d.date, { weekday: undefined, day: undefined, month: 'long', year: 'numeric' }); if (m !== month) { if (month) h += '</ul>'; month = m; h += `<h2 class="month">${esc(m)}</h2><ul class="list">`; }
+    h += `<p class="muted small">${esc(P().meta.title || '')}${P().meta.title ? '. ' : ''}${P().days.length} days · ${int(total())} miles · ${multi() ? legs().map(l => `${esc(l.name)}: ${esc(fmtD(l.start, { weekday: undefined, year: 'numeric' }))} to ${esc(fmtD(l.end, { weekday: undefined }))}`).join(' · ') : `day 1 ${esc(fmtD(P().meta.start))} · ${esc(L('end'))} ${esc(fmtD(P().meta.finish))}${P().meta.control_finish ? ` (book-pace control ${esc(fmtD(P().meta.control_finish))})` : ''}`}. A ${esc(P().meta.status)}.</p>`; let legSeen = 0;
+    P().days.forEach(d => { const m = fmtD(d.date, { weekday: undefined, day: undefined, month: 'long', year: 'numeric' });
+      if (multi() && d.leg !== legSeen) { if (month) h += '</ul>'; month = ''; legSeen = d.leg; const l = legOf(d); h += `<div class="card"><p class="kicker">${esc(l.name)} · ${int(l.days)} days</p><p class="big">${esc(l.frm)} to ${esc(l.to)}</p><p class="small muted">${esc(fmtDL(l.start))} to ${esc(fmtDL(l.end))}</p></div>`; }
+      if (m !== month) { if (month) h += '</ul>'; month = m; h += `<h2 class="month">${esc(m)}</h2><ul class="list">`; }
       const dots = [...new Set(d.notes.map(n => FLAG[n.flag]).filter(Boolean))].map(c => `<i class="dot ${c}"></i>`).join('');
-      h += `<li><a class="item ${d.kind === 'rest day' ? 'rest' : ''} ${d.date === t ? 'today' : ''}" href="#/day/${d.day}"><span class="d">${d.day} · ${esc(fmtD(d.date, { weekday: undefined }))}</span><span class="t">${d.kind === 'rest day' ? 'Rest day, ' : ''}${esc(d.to)}${d.kind === 'town' ? ' <span class="flag green">TOWN</span>' : ''}${dots}</span><span class="r">${d.mi ? num(d.mi) : ''}</span></a></li>`; });
+      h += `<li><a class="item ${d.kind === 'rest day' ? 'rest' : ''} ${d.date === t ? 'today' : ''}" href="#/day/${d.day}"><span class="d">${multi() ? (d.ld || d.day) : d.day} · ${esc(fmtD(d.date, { weekday: undefined }))}</span><span class="t">${d.kind === 'rest day' ? 'Rest day, ' : ''}${esc(d.to)}${d.kind === 'town' ? ' <span class="flag green">TOWN</span>' : ''}${dots}</span><span class="r">${d.mi ? num(d.mi) : ''}</span></a></li>`; });
     h += '</ul>';
   } else if (sub === 'check') {
     const ca = P().control, pa = planArr(), es = entries();
-    h += `<div class="card"><p class="small muted">Plan = your pace. Control = book pace, ten hours a day. If you are later than the control date, you are outside the range the plan was built for.</p><div class="scroll"><table><tr><th>Checkpoint</th><th>Plan</th><th>Control</th><th>You</th></tr>` +
-      P().towns.filter(t => t.kind === 'town').concat([{ name: L('endName'), m: total() }]).map(t => { const you = es.find(e => typeof e.b === 'number' && e.b >= t.m - 0.05), c = dateAtMile(ca, t.m); return `<tr><td>${esc(t.name)}<br><span class="muted small num">mile ${num(t.m)}${t.zero ? ' · rest day' : ''}</span></td><td>${esc(fmtD(dateAtMile(pa, t.m), { weekday: undefined }))}</td><td>${esc(fmtD(c, { weekday: undefined }))}</td><td>${you ? `<span class="flag ${you.date > c ? 'red' : 'green'}">${esc(fmtD(you.date, { weekday: undefined }))}</span>` : ''}</td></tr>`; }).join('') + '</table></div></div>' +
-      `<div class="card"><h2>Decision points</h2>${P().decision.points.map(p => `<p><b>${esc(p.name)}</b> (plan ${esc(fmtD(p.plan))}, control ${esc(fmtD(p.control))}). ${esc(p.text)}</p>`).join('')}<p class="small muted">${esc(P().decision.note)}</p></div>`;
+    h += `<div class="card"><p class="small muted">${P().meta.noControl ? 'Planned arrival at each town, and the date you actually reached it.' : 'Plan = your pace. Control = book pace, ten hours a day. If you are later than the control date, you are outside the range the plan was built for.'}</p><div class="scroll"><table><tr><th>Checkpoint</th><th>Plan</th>${P().meta.noControl ? '' : '<th>Control</th>'}<th>You</th></tr>` +
+      P().towns.filter(t => t.kind === 'town').concat([{ name: L('endName'), m: total() }]).map(t => { const you = es.find(e => typeof e.b === 'number' && e.b >= t.m - 0.05), c = dateAtMile(ca, t.m); return `<tr><td>${esc(t.name)}<br><span class="muted small num">mile ${num(t.m)}${t.zero ? ' · rest day' : ''}</span></td><td>${esc(fmtD(dateAtMile(pa, t.m), { weekday: undefined }))}</td>${P().meta.noControl ? '' : `<td>${esc(fmtD(c, { weekday: undefined }))}</td>`}<td>${you ? `<span class="flag ${P().meta.noControl ? (you.date > addDays(dateAtMile(pa, t.m), 7) ? 'amber' : 'green') : (you.date > c ? 'red' : 'green')}">${esc(fmtD(you.date, { weekday: undefined }))}</span>` : ''}</td></tr>`; }).join('') + '</table></div></div>' +
+      `<div class="card"><h2>Decision points</h2>${P().decision.points.map(p => `<p><b>${esc(p.name)}</b> (plan ${esc(fmtD(p.plan))}, ${P().meta.noControl ? 'latest' : 'control'} ${esc(fmtD(p.control))}). ${esc(p.text)}</p>`).join('')}<p class="small muted">${esc(P().decision.note)}</p></div>`;
   } else if (sub === 'todo') {
     const pre = P().calendar.filter(c => !c.trail), tr = P().calendar.filter(c => c.trail);
     h += roNote() + `<div class="card"><h2>Before the trail</h2>${pre.map(todoRow).join('')}</div><div class="card"><h2>Bookings on the trail</h2>${tr.map(todoRow).join('')}</div><a class="btn ghost block" href="#/rules/permits">Every permit in detail</a>`;
@@ -412,7 +426,7 @@ V.edit = date => {
   const e = S.logs[date] && !S.logs[date].deleted ? S.logs[date] : { date, a: prev ? prev.b : (pd ? pd.a : 0), b: null, wx: [], rest: pd ? pd.kind === 'rest day' : false };
   const a = typeof e.a === 'number' ? e.a : 0, opts = sitesAhead(a - 0.06, 45).map(p => `<option value="${p.m}|${esc(p.n)}">${num(p.m - a)} mi · ${esc(p.n)} (${KIND[p.k]})</option>`).join('');
   const five = (name, v) => `<div class="chips">${[1, 2, 3, 4, 5].map(n => `<label><input type="radio" name="${name}" value="${n}" ${v === n ? 'checked' : ''}><span>${n}</span></label>`).join('')}</div>`;
-  return `<h1>${S.logs[date] ? 'Edit' : 'Log'} ${esc(fmtD(date))}</h1>${pd ? `<p class="muted small">Plan day ${pd.day}: ${pd.kind === 'rest day' ? 'rest day in ' : ''}${esc(pd.to)}${pd.mi ? ', ' + num(pd.mi) + ' mi to mile ' + num(pd.b) : ''}.</p>` : ''}
+  return `<h1>${S.logs[date] ? 'Edit' : 'Log'} ${esc(fmtD(date))}</h1>${pd ? `<p class="muted small">Plan, ${esc(dlabel(pd))}: ${pd.kind === 'rest day' ? 'rest day in ' : ''}${esc(pd.to)}${pd.mi ? ', ' + num(pd.mi) + ' mi to mile ' + num(pd.b) : ''}.</p>` : ''}
   <form id="logform" class="card" data-date="${esc(date)}" autocomplete="off">
   <label class="check"><input type="checkbox" name="rest" ${e.rest ? 'checked' : ''}><span class="t">Rest day (no miles)</span></label>
   <div class="two"><div><label for="la">Started at mile</label><input id="la" name="a" inputmode="decimal" value="${typeof e.a === 'number' ? e.a : ''}"></div><div><label for="lb">Ended at mile</label><input id="lb" name="b" inputmode="decimal" value="${typeof e.b === 'number' ? e.b : ''}"></div></div>
@@ -491,6 +505,7 @@ V.settings = () => {
   <div class="btns"><button class="btn" data-act="sync">Sync now</button><button class="btn ghost" data-act="test">Test the key</button></div>
   <p class="small muted">Last sync: ${S.meta.lastSync ? esc(new Date(S.meta.lastSync).toLocaleString('en-US', { timeZone: TZ })) + ' ' + esc(L('tzName')) : 'never'}${pend ? ` · ${pend} change${pend === 1 ? '' : 's'} waiting for signal` : ''}${S.meta.lastErr ? ' · last problem: ' + esc(S.meta.lastErr) : ''}<br>Plan on this device: ${P() ? 'built ' + esc(P().meta.built) : 'none'} · trail line: ${S.track ? 'yes' : 'none'}</p><p class="small" id="offline"></p></div>
   ${isHome() ? '' : `<div class="card"><h2>About me (this phone only)</h2><p class="small muted">Shown on the Emergency page. Never sent anywhere.</p><label for="cn">Name</label><input id="cn" data-card="name" value="${esc(s.card.name)}"><label for="cc">Emergency contact (name and number)</label><input id="cc" data-card="contact" value="${esc(s.card.contact)}"><label for="cm">Medical notes (conditions, medicines, allergies, physician)</label><textarea id="cm" data-card="medical">${esc(s.card.medical)}</textarea></div>`}
+  ${Object.keys(S.meta.plans).length > 1 ? `<div class="card"><h2>Plan in use</h2><p class="small muted">Both plans are kept on this device. Your log and checklists are shared between them.</p><select data-set="planFile" aria-label="Plan in use">${Object.keys(S.meta.plans).sort().map(f => `<option value="${esc(f)}" ${f === activePlan() ? 'selected' : ''}>${esc(S.meta.plans[f])}</option>`).join('')}</select></div>` : ''}
   <div class="card"><h2>Breaks</h2><p class="small muted">Hours a day you allow for eating, cooking and rest while it is light. Walking hours never include these; each day's "set off by" time does.</p><input inputmode="decimal" data-set="breaks" aria-label="Break hours a day" value="${esc(String(brk()))}"></div>
   <div class="card"><h2>Preview a day</h2><p class="small muted">See the app as it will look on a day of the walk. Leave empty for today.</p><input type="date" data-set="preview" aria-label="Preview date" value="${esc(s.preview)}"></div>
   <div class="card"><h2>Backup</h2><p class="small muted">A copy of your log and checklists as a file, in case the phone or the sync fails.</p><div class="btns"><button class="btn ghost" data-act="export">Save a backup file</button><label class="btn ghost">Restore from a file<input type="file" accept="application/json,.json" data-import hidden></label></div>
@@ -598,7 +613,7 @@ function mapAttach() {
 V.map = (kind, arg) => {
   if (!P() || !S.track) return needPlan(); const T = S.track, at = (m, z) => { MAP.lat = interp(T.lat, m); MAP.lon = interp(T.lon, m); MAP.z = z; MAP.ready = true; };
   let title = 'Map'; MAP.hi = null;
-  if (kind === 'day') { const d = P().days.find(x => x.day === +arg); if (d) { MAP.hi = { a: d.a, b: d.b }; at((d.a + d.b) / 2, d.mi > 12 ? 11.6 : 12.4); title = `Day ${d.day}: ${d.to}`; } }
+  if (kind === 'day') { const d = P().days.find(x => x.day === +arg); if (d) { MAP.hi = { a: d.a, b: d.b }; at((d.a + d.b) / 2, d.mi > 12 ? 11.6 : 12.4); title = `${dlabel(d)}: ${d.to}`; } }
   else if (kind === 'at' && isFinite(+arg)) at(+arg, 14);
   else if (kind === 'me' && S.gps && S.gps.lat != null) { MAP.lat = S.gps.lat; MAP.lon = S.gps.lon; MAP.z = 14; MAP.ready = true; }
   if (!MAP.ready) at(myMile() != null ? myMile() : Math.max(2, mileOn(planArr(), today())), 11.5);
@@ -674,7 +689,7 @@ document.addEventListener('click', async ev => {
   else if (act === 'delmap') { if (confirm('Remove this section\'s topographic maps from the device?')) deleteSection(b.dataset.id); }
   else if (act === 'gpslog') locate(g => { const f = $('#logform'); if (f && g.mile != null) { const keep = new FormData(f); S.draft = Object.fromEntries(keep.entries()); S.draft.wx = keep.getAll('wx'); S.draft.b = g.mile.toFixed(1); const near = P().points.filter(p => p.k !== 'r' && Math.abs(p.m - g.mile) < 0.25)[0]; if (near && !S.draft.place) S.draft.place = near.n; S.draft.lat = g.lat; S.draft.lon = g.lon; } render(); applyDraft(); toast(g.offFt > 1500 ? 'You appear to be off the trail; mile is the nearest point.' : 'Mile filled from GPS.'); });
   else if (act === 'sync') sync(true);
-  else if (act === 'acceptplan' && S.pending) { if (S.pending.plan) { await db.set('plan', S.pending.plan); usePlan(S.pending.plan); } if (S.pending.track) { await db.set('track', S.pending.track); S.track = decodeTrack(S.pending.track); } Object.assign(S.meta.shas, S.pending.shas); S.pending = null; await db.set('pending', null); await saveMeta(); toast('The new plan is in use.'); render(); }
+  else if (act === 'acceptplan' && S.pending) { if (S.pending.plan) { await db.set('plan:' + (S.pending.file || activePlan()), S.pending.plan); usePlan(S.pending.plan); } if (S.pending.track) { await db.set('track', S.pending.track); S.track = decodeTrack(S.pending.track); } Object.assign(S.meta.shas, S.pending.shas); S.pending = null; await db.set('pending', null); await saveMeta(); toast('The new plan is in use.'); render(); }
   else if (act === 'keepplan' && S.pending) { Object.assign(S.meta.shas, S.pending.shas); S.pending = null; await db.set('pending', null); await saveMeta(); toast('Kept your plan. The new one will be offered again if it changes.'); render(); }
   else if (act === 'nopreview') { S.settings.preview = ''; saveSettings(); render(); }
   else if (act === 'test') { if (!S.settings.token || !S.settings.repo) return toast('Enter the repository and paste the key first.'); try { const r = await fetch(`https://api.github.com/repos/${S.settings.repo}`, { headers: hdr() }); if (!r.ok) { toast(keyProblem(r.status)); return; } const j = await r.json(); toast(!j.private ? 'Warning: that repository is PUBLIC.' : (j.permissions && j.permissions.push) ? (isHome() ? 'Key works, but it can write. A read-only key is safer here.' : 'Key works: private, can write.') : (isHome() ? 'Key works: private, read only.' : 'Key can read but not write. Set Contents to Read and write.')); } catch (e) { toast('Key test failed: ' + e.message); } }
@@ -691,7 +706,8 @@ document.addEventListener('change', async ev => {
   else if (t.dataset.gear) { S.st.gear[t.dataset.gear] = t.checked; stChanged(); t.closest('.check').classList.toggle('done', t.checked); }
   else if (t.dataset.oz) { const v = parseFloat(t.value); S.st.oz[t.dataset.oz] = v > 0 ? v : 0; stChanged(); }
   else if (t.hasAttribute('data-floor')) { S.st.floor = t.value.trim().slice(0, 8); stChanged(); }
-  else if (t.dataset.set) { const k = t.dataset.set; let v = t.value.trim(); if (k === 'repo' && !REPO_RE.test(v)) { toast('That does not look like owner/name.'); t.value = S.settings.repo; return; } if (k === 'preview' && v && !DATE_RE.test(v)) v = ''; if (k === 'token') v = v.replace(/\s+/g, ''); S.settings[k] = v; saveSettings(); if (k === 'mode' || k === 'preview' || k === 'breaks') render(); if (k === 'token') { t.value = v; const ki = $('#keyinfo'); if (ki) ki.textContent = keyInfo(v); } }
+  else if (t.dataset.set) { const k = t.dataset.set; let v = t.value.trim(); if (k === 'repo' && !REPO_RE.test(v)) { toast('That does not look like owner/name.'); t.value = S.settings.repo; return; } if (k === 'preview' && v && !DATE_RE.test(v)) v = '';
+    if (k === 'planFile') { if (!isPlanFile(v)) return; const pj = cleanPlan(await db.get('plan:' + v)); if (!pj) { toast('That plan is not on this device yet. Sync once with signal.'); render(); return; } S.settings.planFile = v; saveSettings(); usePlan(pj); toast('Now using: ' + (pj.meta.title || v)); render(); return; } if (k === 'token') v = v.replace(/\s+/g, ''); S.settings[k] = v; saveSettings(); if (k === 'mode' || k === 'preview' || k === 'breaks') render(); if (k === 'token') { t.value = v; const ki = $('#keyinfo'); if (ki) ki.textContent = keyInfo(v); } }
   else if (t.dataset.card) { S.settings.card[t.dataset.card] = t.value.slice(0, 1500); saveSettings(); }
   else if (t.hasAttribute('data-pick') && t.value) { const [m, ...n] = t.value.split('|'), f = $('#logform'); f.b.value = m; f.place.value = n.join('|'); }
   else if (t.hasAttribute('data-import') && t.files[0]) { try { const j = JSON.parse(await t.files[0].text()); if (j.app !== 'trailbook') throw new Error('not a Trail Book backup'); const before = Object.keys(S.logs).length; Object.values(j.logs || {}).forEach(e => { const c = cleanEntry(e); if (c && (!S.logs[c.date] || (c.t || 0) > (S.logs[c.date].t || 0))) { S.logs[c.date] = c; markDirty(c.date); } }); const st = cleanSt(j.st); if (st.updated > S.st.updated) { S.st = st; S.meta.stDirty = true; } await saveLogs(); await saveSt(); await saveMeta(); toast(`Restored. ${Object.keys(S.logs).length - before} new entries.`); render(); } catch (e) { toast('Could not restore: ' + e.message); } }
@@ -713,10 +729,11 @@ window.addEventListener('offline', () => setNet());
 (async function start() {
   loadSettings();
   try {
-    const [plan, track, logs, st, meta, pending] = await Promise.all(['plan', 'track', 'logs', 'st', 'meta', 'pending'].map(k => db.get(k)));
-    const cp = cleanPlan(plan); if (cp) usePlan(cp); if (pending && pending.shas) S.pending = pending; if (track && track.n) S.track = decodeTrack(track);
+    const [planNew, planOld, track, logs, st, meta, pending] = await Promise.all(['plan:' + activePlan(), 'plan', 'track', 'logs', 'st', 'meta', 'pending'].map(k => db.get(k)));
+    // 'plan' is where versions before 0.4 kept the plan in use
+    const cp = cleanPlan(planNew || (activePlan() === 'plan.json' ? planOld : null)); if (cp) usePlan(cp); if (pending && pending.shas) S.pending = pending; if (track && track.n) S.track = decodeTrack(track);
     if (logs) Object.values(logs).forEach(e => { const c = cleanEntry(e); if (c) S.logs[c.date] = c; });
-    if (st) S.st = cleanSt(st); if (meta) Object.assign(S.meta, meta, { dirty: Array.isArray(meta.dirty) ? meta.dirty : [], shas: meta.shas || {}, maps: meta.maps || {} });
+    if (st) S.st = cleanSt(st); if (meta) Object.assign(S.meta, meta, { dirty: Array.isArray(meta.dirty) ? meta.dirty : [], shas: meta.shas || {}, maps: meta.maps || {}, plans: meta.plans || {} });
   } catch (e) { toast('This browser is blocking storage; nothing can be kept.'); }
   render(); lastHash = location.hash;
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
