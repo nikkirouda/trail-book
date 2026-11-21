@@ -2,7 +2,7 @@
    This file is code only. It holds no plan, no dates, no names and no log: those are fetched once from a
    private repository with a key the owner pastes in, and are then kept on the device for offline use. */
 'use strict';
-const VERSION = '0.4.0';
+const VERSION = '0.4.1';
 let TZ = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';      // replaced by the plan's own time zone once a plan is loaded
 const DEF = { start: 'the start', end: 'the finish', endName: 'The finish', tzName: 'local time', quiet: 'remote country', who: 'a hiker on the trail', floorNote: '', coldName: '', coldMile: null, coldAfter: '', coldWarn: '', dirNote: 'from the start', mapCredit: 'Topographic base: USGS The National Map.' };
 const L = k => (S.plan && S.plan.meta && S.plan.meta.labels && S.plan.meta.labels[k] != null) ? S.plan.meta.labels[k] : DEF[k];
@@ -217,27 +217,29 @@ let toastT; function toast(m) { const t = $('#toast'); t.textContent = m; t.clas
 /* ---------- small renderers ---------- */
 const RED = ['FORD', 'ALPINE', 'COLD'], FLAG = new Proxy({}, { get: (_, f) => RED.includes(f) ? 'red' : f === 'FEE' ? '' : 'amber' });
 const stat = (v, l) => `<div class="stat"><b>${v}</b><span>${esc(l)}</span></div>`;
-function profile(a, b, meMile) {
+function profile(a, b, meMile, back) {
   if (!S.track || !(b > a)) return '';
   const T = S.track, W = 320, H = 96, n = 120, pts = []; let lo = 1e9, hi = -1e9;
-  for (let i = 0; i <= n; i++) { const m = a + (b - a) * i / n, e = interp(T.el, m); pts.push([m, e]); lo = Math.min(lo, e); hi = Math.max(hi, e); }
-  const pad = Math.max(100, (hi - lo) * 0.1); lo -= pad; hi += pad;
-  const x = m => 4 + (m - a) / (b - a) * (W - 8), y = e => H - 14 - (e - lo) / (hi - lo) * (H - 26);
+  // back: an out-and-back day, walked from b to a and returned, so the picture shows both halves
+  for (let i = 0; i <= n; i++) { const f = i / n, m = back ? (f <= 0.5 ? b - (b - a) * f * 2 : a + (b - a) * (f - 0.5) * 2) : a + (b - a) * f, e = interp(T.el, m); pts.push([f, e]); lo = Math.min(lo, e); hi = Math.max(hi, e); }
+  const top = int(hi), bot = int(lo), pad = Math.max(100, (hi - lo) * 0.1); lo -= pad; hi += pad;
+  const x = f => 4 + f * (W - 8), y = e => H - 14 - (e - lo) / (hi - lo) * (H - 26);
   const line = pts.map((p, i) => (i ? 'L' : 'M') + x(p[0]).toFixed(1) + ' ' + y(p[1]).toFixed(1)).join(' ');
-  const me = (meMile != null && meMile >= a && meMile <= b) ? `<circle class="me" cx="${x(meMile).toFixed(1)}" cy="${y(interp(T.el, meMile)).toFixed(1)}" r="4.5"/>` : '';
-  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Elevation profile, ${int(Math.min(...pts.map(p => p[1])))} to ${int(Math.max(...pts.map(p => p[1])))} feet"><path class="area" d="${line} L${x(b).toFixed(1)} ${H - 14} L${x(a).toFixed(1)} ${H - 14}Z"/><path class="line" d="${line}"/><line class="axis" x1="4" y1="${H - 14}" x2="${W - 4}" y2="${H - 14}"/>${me}<text x="4" y="${H - 3}">mile ${num(a)}</text><text x="${W - 4}" y="${H - 3}" text-anchor="end">${num(b)}</text><text x="4" y="10">high ${int(Math.max(...pts.map(p => p[1])))} ft</text><text x="${W - 4}" y="10" text-anchor="end">low ${int(Math.min(...pts.map(p => p[1])))} ft</text></svg>`;
+  const me = (!back && meMile != null && meMile >= a && meMile <= b) ? `<circle class="me" cx="${x((meMile - a) / (b - a)).toFixed(1)}" cy="${y(interp(T.el, meMile)).toFixed(1)}" r="4.5"/>` : '';
+  const foot = back ? `<text x="4" y="${H - 3}">start</text><text x="${W / 2}" y="${H - 3}" text-anchor="middle">turn round, mile ${num(a)}</text><text x="${W - 4}" y="${H - 3}" text-anchor="end">back, mile ${num(b)}</text>` : `<text x="4" y="${H - 3}">mile ${num(a)}</text><text x="${W - 4}" y="${H - 3}" text-anchor="end">${num(b)}</text>`;
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Elevation profile${back ? ', out and back' : ''}, ${bot} to ${top} feet"><path class="area" d="${line} L${x(1).toFixed(1)} ${H - 14} L${x(0).toFixed(1)} ${H - 14}Z"/><path class="line" d="${line}"/><line class="axis" x1="4" y1="${H - 14}" x2="${W - 4}" y2="${H - 14}"/>${me}${foot}<text x="4" y="10">high ${top} ft</text><text x="${W - 4}" y="10" text-anchor="end">low ${bot} ft</text></svg>`;
 }
 function noteHtml(n) { const c = FLAG[n.flag] || ''; return `<div class="note ${c}"><span class="flag ${c}">${esc(n.flag)}</span>${esc(n.text)}</div>`; }
 function dayCard(d, opts) {
-  opts = opts || {}; const s = sunTimes(d.date, d.lat, d.lon), rest = d.kind === 'rest day';
+  opts = opts || {}; const s = sunTimes(d.date, d.lat, d.lon), rest = d.kind === 'rest day', back = d.walk > d.mi + 0.05;
   const place = esc(d.to) + (d.off > 500 ? ` <span class="muted small">(${int(d.off)} ft off trail)</span>` : '');
   let h = `<div class="card"><p class="kicker">${esc(dlabel(d))} · ${esc(fmtD(d.date, multi() ? { year: 'numeric' } : null))}${opts.tag ? ' · ' + esc(opts.tag) : ''}</p><p class="big">${rest ? 'Rest day in ' + esc(d.to) : place}</p>`;
   if (!rest) h += `<p class="muted small">from ${esc(d.frm)}${d.state ? ' · ' + esc(d.state) : ''}${d.food ? ' · food storage: ' + esc(d.food) : ''}</p>
-    <div class="stats">${stat(num(d.mi), 'miles')}${stat(int(d.up), 'ft climb')}${stat(num(d.hrs), `hrs at ${P().meta.mph} mph`)}${P().meta.ceiling ? stat(num(d.eff), `effort, ceiling ${num(P().meta.ceiling)}`) : stat(num(d.book), 'hrs book pace')}${stat(num(d.light), 'hrs daylight')}${stat(num(d.b), 'mile tonight')}</div>`;
-  if (s.rise) h += `<p class="small muted">Sunrise ${esc(fmtT(s.rise))} · sunset ${esc(fmtT(s.set))} (${esc(L('tzName'))})${d.day === 1 ? ' · ' + num(d.walk) + ' miles walked today' : ''}</p>`;
+    <div class="stats">${back ? stat(num(d.walk), 'miles walked, up and back') : stat(num(d.mi), 'miles')}${stat(int(d.up), back ? 'ft up, then down again' : 'ft climb')}${stat(num(d.hrs), `hrs at ${P().meta.mph} mph`)}${P().meta.ceiling ? stat(num(d.eff), `effort, ceiling ${num(P().meta.ceiling)}`) : stat(num(d.book), 'hrs book pace')}${stat(num(d.light), 'hrs daylight')}${stat(num(d.b), 'mile tonight')}</div>`;
+  if (s.rise) h += `<p class="small muted">Sunrise ${esc(fmtT(s.rise))} · sunset ${esc(fmtT(s.set))} (${esc(L('tzName'))})${back ? ' · ' + num(d.mi) + ' of the ' + num(d.walk) + ' miles count toward the total' : ''}</p>`;
   if (!rest && s.rise) { const br = brk(), need = x => new Date(s.set.getTime() - (x + br + 0.5) * 36e5), a = need(d.hrs), b = need(d.book), tight = a < s.rise, slow = b < s.rise;
     h += `<div class="box ${tight ? 'red' : slow ? 'amber' : 'green'}"><b>${tight ? 'This day does not fit the daylight, even at your pace.' : slow ? 'Fits at your pace; not at book pace.' : 'Fits the daylight at either pace.'}</b> With ${num(br)} h of breaks and camp made half an hour before sunset, set off by <b>${esc(fmtT(a))}</b> at ${P().meta.mph} mph${slow ? `. At book pace you would have to leave at ${esc(fmtT(b))}, before sunrise: shorten the day, or expect to finish by headlamp` : `, or by ${esc(fmtT(b))} at book pace`}.</div>`; }
-  if (!rest) h += profile(d.a, d.b, opts.me);
+  if (!rest) h += profile(d.a, d.b, opts.me, back);
   if (d.note) h += `<div class="note"><span class="flag">${d.kind === 'town' || rest ? 'TOWN' : 'NOTE'}</span>${esc(d.note)}</div>`;
   h += d.notes.map(noteHtml).join('');
   if (d.roads.length) h += `<p class="small"><b>Roads crossed (ways out):</b> ${d.roads.map(esc).join(' · ')}</p>`;
